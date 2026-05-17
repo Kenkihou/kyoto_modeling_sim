@@ -1,0 +1,1541 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>景観規制_建物シミュレーター (モデリングモード)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #ffffff; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #333;
+            font-family: sans-serif;
+            pointer-events: none;
+            background: rgba(255,255,255,0.9);
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            z-index: 10;
+        }
+        
+        #tooltip {
+            position: absolute;
+            display: none;
+            background: rgba(0, 0, 0, 0.75);
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-family: sans-serif;
+            font-size: 13px;
+            pointer-events: none;
+            white-space: pre-line; 
+            z-index: 100;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        }
+        
+        .lil-gui {
+            --font-size: 14px;
+            --input-font-size: 14px;
+            --widget-height: 28px;
+            --name-width: 40%;
+            --folder-indent: 10px;
+        }
+
+        .tool-row { display: flex; gap: 5px; margin-bottom: 5px; }
+        .tool-btn {
+            flex: 1; text-align: center; background: #3a3a3a; color: #ccc;
+            padding: 8px 0; border-radius: 3px; cursor: pointer; font-size: 13px;
+            font-weight: bold; border: 1px solid #222; user-select: none;
+            transition: all 0.2s;
+        }
+        .tool-btn:hover { background: #4a4a4a; color: #fff; }
+        .tool-btn.active { background: #007acc; color: white; border-color: #005a9e; }
+
+        .action-row { display: flex; gap: 5px; margin-top: 5px; }
+        .action-btn {
+            flex: 1; text-align: center; background: #555; color: white;
+            padding: 6px 0; border-radius: 3px; cursor: pointer; font-size: 13px;
+            user-select: none;
+        }
+        .action-btn:hover { background: #666; }
+        .action-btn:active { background: #444; }
+        .action-btn.disabled { opacity: 0.3; pointer-events: none; }
+    </style>
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+<body>
+    <div id="info">
+        <strong id="mode-text" style="color: #005a9e;">【選択・視点移動】</strong><br>
+        <span id="mode-desc">左クリック: 物体を選択 (Deleteで削除) / 左ドラッグ: 回転 / 右ドラッグ: 平行移動</span>
+    </div>
+    
+    <div id="tooltip"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+        // --- 基本セットアップ ---
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xf5f5f5);
+
+        const camera = new THREE.PerspectiveCamera(45, width / height, 100, 50000);
+        camera.position.set(12000, 10000, 15000);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(width, height);
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        controls.update(); 
+
+        const gridHelper = new THREE.GridHelper(20000, 40, 0xcccccc, 0xe0e0e0);
+        gridHelper.position.y = -1; 
+        scene.add(gridHelper);
+
+        const wallMat = new THREE.MeshBasicMaterial({ 
+            color: 0xe8e8e8, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
+        }); 
+        const activeMat = new THREE.MeshBasicMaterial({ 
+            color: 0xcceeff, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
+        }); 
+        const selectedMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffaaaa, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
+        }); 
+        const roofMat = new THREE.MeshBasicMaterial({ 
+            color: 0x555555, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide 
+        });
+        const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 });
+
+        const hoverMat = new THREE.MeshBasicMaterial({ 
+            color: 0xffaa00, transparent: true, opacity: 0.6, side: THREE.DoubleSide 
+        });
+        const hoverMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), hoverMat);
+        hoverMesh.visible = false;
+        scene.add(hoverMesh);
+
+        const houseGroup = new THREE.Group();
+        scene.add(houseGroup);
+
+        const tooltip = document.getElementById('tooltip');
+
+        // --- 状態管理 ---
+        let currentTool = null; 
+        let buildingData = []; 
+        let interactiveMeshes = []; 
+        let meshMap = {}; 
+        let selectedId = null;
+        let waitingForVisorBlockId = null; 
+
+        let btnUndo = null, btnRedo = null;
+        const MAX_HISTORY = 3;
+        let history = [];
+        let historyIndex = -1;
+
+        function updateActionButtons() {
+            if (!btnUndo || !btnRedo) return; 
+            if (historyIndex > 0) btnUndo.classList.remove('disabled');
+            else btnUndo.classList.add('disabled');
+            if (historyIndex < history.length - 1) btnRedo.classList.remove('disabled');
+            else btnRedo.classList.add('disabled');
+        }
+
+        function saveState() {
+            if (historyIndex < history.length - 1) {
+                history = history.slice(0, historyIndex + 1);
+            }
+            history.push(JSON.stringify(buildingData));
+            if (history.length > MAX_HISTORY + 1) history.shift();
+            else historyIndex++;
+            updateActionButtons();
+        }
+
+        function undo() {
+            if (historyIndex > 0) {
+                historyIndex--;
+                buildingData = JSON.parse(history[historyIndex]);
+                selectedId = null; 
+                rebuildMeshes();
+                updateActionButtons();
+            }
+        }
+
+        function redo() {
+            if (historyIndex < history.length - 1) {
+                historyIndex++;
+                buildingData = JSON.parse(history[historyIndex]);
+                selectedId = null;
+                rebuildMeshes();
+                updateActionButtons();
+            }
+        }
+
+        function isTopClear(b) {
+            for (let ob of buildingData) {
+                if (ob.id === b.id) continue;
+                const obBottom = ob.y || 0;
+                const obTop = obBottom + ob.h;
+                const bTop = (b.y || 0) + b.h;
+                
+                if (obBottom <= bTop + 1 && obTop >= bTop - 1) {
+                    const overlapX = Math.abs(ob.x - b.x) * 2 < (ob.w + b.w) - 1;
+                    const overlapZ = Math.abs(ob.z - b.z) * 2 < (ob.d + b.d) - 1;
+                    if (overlapX && overlapZ) return false;
+                }
+            }
+            return true;
+        }
+
+        function getStackedBlocks(baseBlocks) {
+            let result = [...baseBlocks];
+            let added = true;
+            while(added) {
+                added = false;
+                buildingData.forEach(ob => {
+                    if (!result.find(r => r.id === ob.id)) {
+                        for(let b of result) {
+                            const bTop = (b.y || 0) + b.h;
+                            const obBottom = ob.y || 0;
+                            if (Math.abs(obBottom - bTop) < 1) { 
+                                const overlapX = Math.abs(ob.x - b.x) * 2 < (ob.w + b.w) - 1;
+                                const overlapZ = Math.abs(ob.z - b.z) * 2 < (ob.d + b.d) - 1;
+                                if (overlapX && overlapZ) {
+                                    result.push(ob);
+                                    added = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            return result;
+        }
+
+        function updateAllSkirtRoofs() {
+            buildingData.forEach(b => {
+                if (b.skirtRoof) {
+                    let upperB = null;
+                    for (let ob of buildingData) {
+                        if (ob.id === b.id) continue;
+                        const obBottom = ob.y || 0;
+                        const lowerTop = (b.y || 0) + b.h;
+                        if (Math.abs(obBottom - lowerTop) < 1) {
+                            const overlapX = Math.abs(ob.x - b.x) * 2 < (ob.w + b.w) - 1;
+                            const overlapZ = Math.abs(ob.z - b.z) * 2 < (ob.d + b.d) - 1;
+                            if (overlapX && overlapZ) { upperB = ob; break; }
+                        }
+                    }
+                    if (upperB) {
+                        const L1 = b.x - b.w/2; const R1 = b.x + b.w/2;
+                        const B1 = b.z - b.d/2; const F1 = b.z + b.d/2;
+                        const L2 = upperB.x - upperB.w/2; const R2 = upperB.x + upperB.w/2;
+                        const B2 = upperB.z - upperB.d/2; const F2 = upperB.z + upperB.d/2;
+                        b.skirtRoof.out_nx = Math.max(0, L2 - L1);
+                        b.skirtRoof.out_px = Math.max(0, R1 - R2);
+                        b.skirtRoof.out_nz = Math.max(0, B2 - B1);
+                        b.skirtRoof.out_pz = Math.max(0, F1 - F2);
+                    }
+                }
+            });
+        }
+
+        window.addRoof = function(type) {
+            if (!selectedId) return alert('まず大屋根を乗せたいブロックをクリックして選択してください。');
+            const b = buildingData.find(d => d.id === selectedId);
+            if (!isTopClear(b)) return alert('上に別のブロックが乗っているため、大屋根は配置できません。');
+            
+            // ★ 既に同じタイプの「切妻」がかかっている場合は、90度回転をトグルする
+            if (b.roof && b.roof.type === type && type === '切妻') {
+                b.roof.rotate90 = !b.roof.rotate90;
+            } else {
+                const keraba = type === '寄棟' ? 600 : 300;
+                b.roof = { type: type, rotate90: false, eaves: 600, keraba: keraba, slope: 4, thick: 150 };
+            }
+            
+            saveState();
+            rebuildMeshes();
+        };
+
+        window.addSkirtRoof = function() {
+            if (!selectedId) return alert('まず基準となる「1階部分（下側のブロック）」を選択してください。');
+            const lowerB = buildingData.find(d => d.id === selectedId);
+            
+            let upperB = null;
+            for (let ob of buildingData) {
+                if (ob.id === lowerB.id) continue;
+                const obBottom = ob.y || 0;
+                const lowerTop = (lowerB.y || 0) + lowerB.h;
+                
+                if (Math.abs(obBottom - lowerTop) < 1) {
+                    const overlapX = Math.abs(ob.x - lowerB.x) * 2 < (ob.w + lowerB.w) - 1;
+                    const overlapZ = Math.abs(ob.z - lowerB.z) * 2 < (ob.d + lowerB.d) - 1;
+                    if (overlapX && overlapZ) {
+                        upperB = ob;
+                        break;
+                    }
+                }
+            }
+
+            if (!upperB) return alert('選択したブロックの上に、屋根を架けるための2階ブロックが見つかりません。');
+
+            const L1 = lowerB.x - lowerB.w/2; const R1 = lowerB.x + lowerB.w/2;
+            const B1 = lowerB.z - lowerB.d/2; const F1 = lowerB.z + lowerB.d/2;
+            const L2 = upperB.x - upperB.w/2; const R2 = upperB.x + upperB.w/2;
+            const B2 = upperB.z - upperB.d/2; const F2 = upperB.z + upperB.d/2;
+
+            let out_nx = Math.max(0, L2 - L1);
+            let out_px = Math.max(0, R1 - R2);
+            let out_nz = Math.max(0, B2 - B1);
+            let out_pz = Math.max(0, F1 - F2);
+
+            if (out_nx === 0 && out_px === 0 && out_nz === 0 && out_pz === 0) {
+                // ★ 修正: アラートを廃止し、テキストで指示を出して待機する
+                const modeText = document.getElementById('mode-text');
+                const modeDesc = document.getElementById('mode-desc');
+                if (modeText && modeDesc) {
+                    modeText.innerText = '【面選択モード (単独軒庇)】';
+                    modeText.style.color = '#d9534f';
+                    modeDesc.innerText = '軒庇を設置する面（1階の壁）をクリックしてください。(背景クリックでキャンセル)';
+                }
+                waitingForVisorBlockId = lowerB.id;
+                return; 
+            }
+
+            // 壁面の後退がある場合（回り込み下屋）
+            lowerB.skirtRoof = { isVisor: false, out_nx, out_px, out_nz, out_pz, eaves: 600, slope: 4, thick: 150 };
+            saveState();
+            rebuildMeshes();
+        };
+        window.removeRoof = function() {
+            if (!selectedId) return;
+            const b = buildingData.find(d => d.id === selectedId);
+            let removed = false;
+            if (b && b.roof) { delete b.roof; removed = true; }
+            if (b && b.skirtRoof) { delete b.skirtRoof; removed = true; }
+            if (removed) {
+                saveState();
+                rebuildMeshes();
+            }
+        };
+
+        function rebuildMeshes() {
+            while(houseGroup.children.length > 0){ 
+                const child = houseGroup.children[0];
+                houseGroup.remove(child); 
+                if(child.geometry) child.geometry.dispose();
+            }
+            meshMap = {};
+            interactiveMeshes = [];
+
+            buildingData.forEach(b => {
+                const geo = new THREE.BoxGeometry(b.w, b.h, b.d);
+                const mat = (b.id === selectedId) ? selectedMat : wallMat;
+                const mesh = new THREE.Mesh(geo, mat);
+                
+                const baseY = b.y || 0;
+                mesh.position.set(b.x, baseY + b.h / 2, b.z);
+                mesh.userData.id = b.id; 
+
+                const edges = new THREE.EdgesGeometry(geo);
+                const line = new THREE.LineSegments(edges, edgeMat);
+                line.position.copy(mesh.position);
+
+                houseGroup.add(mesh, line);
+                interactiveMeshes.push(mesh); 
+                meshMap[b.id] = { mesh, line };
+
+                // --- 大屋根の生成 ---
+                if (b.roof) {
+                    const roofGroup = new THREE.Group();
+                    roofGroup.position.set(b.x, baseY + b.h, b.z); 
+                    
+                    const w = b.w; const d = b.d; 
+                    const t = b.roof.thick; const slope = b.roof.slope / 10;
+                    
+                let e_px, e_nx, e_pz, e_nz;
+                if (b.roof.type === '切妻') {
+                    if (b.roof.rotate90) {
+                        // 回転時：X方向がケラバ、Z方向が軒の出
+                        e_px = b.roof.keraba; e_nx = b.roof.keraba;
+                        e_pz = b.roof.eaves;  e_nz = b.roof.eaves;
+                    } else {
+                        // 通常時：X方向が軒の出、Z方向がケラバ
+                        e_px = b.roof.eaves;  e_nx = b.roof.eaves;
+                        e_pz = b.roof.keraba; e_nz = b.roof.keraba;
+                    }
+                } else {
+                    // 寄棟用（後で e_all に統一されます）
+                    e_px = b.roof.keraba; e_nx = b.roof.keraba;
+                    e_pz = b.roof.keraba; e_nz = b.roof.keraba;
+                }
+
+                    buildingData.forEach(ob => {
+                        if (ob.id === b.id) return;
+                        if ((ob.y || 0) + ob.h > (b.y || 0) + b.h - 50) {
+                            if (Math.max((b.z) - b.d/2, (ob.z) - ob.d/2) < Math.min((b.z) + b.d/2, (ob.z) + ob.d/2) - 1) {
+                                if (ob.x > b.x) {
+                                    let gap = (ob.x - ob.w/2) - (b.x + b.w/2);
+                                    if (gap >= -10 && gap < e_px) e_px = Math.max(0, gap);
+                                }
+                                if (ob.x < b.x) {
+                                    let gap = (b.x - b.w/2) - (ob.x + ob.w/2);
+                                    if (gap >= -10 && gap < e_nx) e_nx = Math.max(0, gap);
+                                }
+                            }
+                            if (Math.max((b.x) - b.w/2, (ob.x) - ob.w/2) < Math.min((b.x) + b.w/2, (ob.x) + ob.w/2) - 1) {
+                                if (ob.z > b.z) {
+                                    let gap = (ob.z - ob.d/2) - (b.z + b.d/2);
+                                    if (gap >= -10 && gap < e_pz) e_pz = Math.max(0, gap);
+                                }
+                                if (ob.z < b.z) {
+                                    let gap = (b.z - b.d/2) - (ob.z + ob.d/2);
+                                    if (gap >= -10 && gap < e_nz) e_nz = Math.max(0, gap);
+                                }
+                            }
+                        }
+                    });
+
+                    if (b.roof.type === '寄棟') {
+                        let e_all = Math.min(e_px, e_nx, e_pz, e_nz);
+                        e_px = e_all; e_nx = e_all; e_pz = e_all; e_nz = e_all;
+                    }
+
+                    if (b.roof.type === '切妻') {
+                        const isRot = b.roof.rotate90;
+                        const profW = isRot ? d : w; 
+                        const extD  = isRot ? w : d; 
+                        
+                        let e_L, e_R, drop_L, drop_R;
+                        if (isRot) {
+                            // 90度回転時は Y軸で回転するため、Z軸とX軸の対応が入れ替わります
+                            e_L = e_pz; // 手前(+Z)が左側にくる
+                            e_R = e_nz; // 奥(-Z)が右側にくる
+                        } else {
+                            e_L = e_nx; 
+                            e_R = e_px; 
+                        }
+                        
+                        const ridgeH = (profW / 2) * slope;
+                        const drop_L_val = e_L * slope;
+                        const drop_R_val = e_R * slope;
+
+                        // 妻壁（三角形）の形状
+                        const gShape = new THREE.Shape();
+                        gShape.moveTo(-profW/2, 0); gShape.lineTo(profW/2, 0);
+                        gShape.lineTo(0, ridgeH); gShape.lineTo(-profW/2, 0);
+                        const gGeo = new THREE.ExtrudeGeometry(gShape, { depth: extD, bevelEnabled: false });
+
+                        // 屋根面（スラブ）の形状
+                        const rShape = new THREE.Shape();
+                        rShape.moveTo(-profW/2 - e_L, -drop_L_val + t);
+                        rShape.lineTo(0, ridgeH + t);
+                        rShape.lineTo(profW/2 + e_R, -drop_R_val + t);
+                        rShape.lineTo(profW/2 + e_R, -drop_R_val);
+                        rShape.lineTo(0, ridgeH);
+                        rShape.lineTo(-profW/2 - e_L, -drop_L_val);
+                        rShape.lineTo(-profW/2 - e_L, -drop_L_val + t);
+                        
+                        const roofD = isRot ? extD + e_nx + e_px : extD + e_nz + e_pz;
+                        const rGeo = new THREE.ExtrudeGeometry(rShape, { depth: roofD, bevelEnabled: false });
+
+                        // ジオメトリのオフセットと回転
+                        if (isRot) {
+                            gGeo.translate(0, 0, -extD/2);
+                            rGeo.translate(0, 0, -(extD/2 + e_nx));
+                            // ★ ジオメトリの頂点自体を回転させることで確実に描画へ反映
+                            gGeo.rotateY(Math.PI / 2);
+                            rGeo.rotateY(Math.PI / 2);
+                        } else {
+                            gGeo.translate(0, 0, -extD/2);
+                            rGeo.translate(0, 0, -(extD/2 + e_nz));
+                        }
+                        
+                        const gMat = (b.id === selectedId) ? selectedMat : wallMat;
+                        const gMesh = new THREE.Mesh(gGeo, gMat);
+                        const gLine = new THREE.LineSegments(new THREE.EdgesGeometry(gGeo), edgeMat);
+                        roofGroup.add(gMesh, gLine);
+                        
+                        const rMesh = new THREE.Mesh(rGeo, roofMat);
+                        const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
+                        roofGroup.add(rMesh, rLine);
+
+                    } else {
+                        let ridge_axis = w <= d ? 'Z' : 'X';
+                        let H_ridge_rel = (ridge_axis === 'Z') ? (w / 2) * slope : (d / 2) * slope;
+                        let drop = e_px * slope; 
+                        
+                        const ry_top = H_ridge_rel + t;
+                        const ey_top = -drop + t;
+                        const ey_bot = -drop;
+                        const ry_bot = H_ridge_rel;
+                        
+                        const ex = w / 2 + e_px;
+                        const ez = d / 2 + e_px;
+                        
+                        let rZ = 0, rX = 0;
+                        if (ridge_axis === 'Z') { rZ = (d - w) / 2; } else { rX = (w - d) / 2; }
+                        
+                        const p_1 = (ridge_axis === 'Z') ? [0, ry_top, rZ] : [rX, ry_top, 0];
+                        const p_2 = (ridge_axis === 'Z') ? [0, ry_top, -rZ] : [-rX, ry_top, 0];
+                        const pb_1 = (ridge_axis === 'Z') ? [0, ry_bot, rZ] : [rX, ry_bot, 0];
+                        const pb_2 = (ridge_axis === 'Z') ? [0, ry_bot, -rZ] : [-rX, ry_bot, 0];
+                        
+                        const vertices = new Float32Array([
+                            p_1[0], ry_top, p_1[2], p_2[0], ry_top, p_2[2],
+                            ex, ey_top, ez,  -ex, ey_top, ez,  ex, ey_top, -ez,  -ex, ey_top, -ez,
+                            pb_1[0], ry_bot, pb_1[2], pb_2[0], ry_bot, pb_2[2],
+                            ex, ey_bot, ez,  -ex, ey_bot, ez,  ex, ey_bot, -ez,  -ex, ey_bot, -ez
+                        ]);
+                        const indices = [
+                            0,3,2, 1,4,5, 0,2,4, 0,4,1, 0,1,5, 0,5,3, 
+                            6,8,9, 7,11,10, 6,7,10, 6,10,8, 6,9,11, 6,11,7,
+                            2,3,9, 2,9,8, 4,10,11, 4,11,5, 2,8,10, 2,10,4, 3,5,11, 3,11,9
+                        ];
+                        if (ridge_axis !== 'Z') {
+                            indices.length = 0;
+                            indices.push(0,2,4, 1,5,3, 0,1,3, 0,3,2, 0,4,5, 0,5,1);
+                            indices.push(6,10,8, 7,9,11, 6,8,9, 6,9,7, 6,7,11, 6,11,10);
+                            indices.push(2,3,9, 2,9,8, 4,10,11, 4,11,5, 2,8,10, 2,10,4, 3,5,11, 3,11,9);
+                        }
+                        
+                        const rGeo = new THREE.BufferGeometry();
+                        rGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                        rGeo.setIndex(indices);
+                        rGeo.computeVertexNormals();
+                        
+                        const rMesh = new THREE.Mesh(rGeo, roofMat);
+                        const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
+                        roofGroup.add(rMesh, rLine);
+                    }
+                    houseGroup.add(roofGroup);
+                }
+
+                // --- 庇（下屋・単独軒庇）の生成 ---
+                if (b.skirtRoof) {
+                    const sr = b.skirtRoof;
+                    const e = sr.eaves;
+                    const slope = sr.slope / 10;
+                    const t = sr.thick;
+                    
+                    const skirtGroup = new THREE.Group();
+                    // 基準高さ(Y=0)は1階の上面（天端）
+                    skirtGroup.position.set(b.x, baseY + b.h, b.z); 
+
+                    const roofVerts = [], roofInds = [];
+                    const wallVerts = [], wallInds = [];
+                    let rIdx = 0, wIdx = 0;
+
+                    const addRoofQuad = (p0, p1, p2, p3) => {
+                        roofVerts.push(...p0, ...p1, ...p2, ...p3);
+                        roofInds.push(rIdx, rIdx+1, rIdx+2, rIdx, rIdx+2, rIdx+3);
+                        rIdx += 4;
+                    };
+                    const addWallTri = (p0, p1, p2) => {
+                        wallVerts.push(...p0, ...p1, ...p2);
+                        wallInds.push(wIdx, wIdx+1, wIdx+2);
+                        wIdx += 3;
+                    };
+
+                    // --- 修正後：壁面境界を起点に、外と内の両方へ勾配で下がる「への字」庇 ---
+                    if (sr.isVisor) {
+                        const k = sr.keraba || 300; 
+                        const e = sr.eaves;
+                        const slope = sr.slope / 10;
+                        const t = sr.thick;
+                        const backDist = 300; // 奥側に伸ばす水平距離
+                        
+                        const dropOuter = e * slope;     // 外側の下げ幅
+                        const dropInner = backDist * slope; // 内側の下げ幅
+                        
+                        const w2 = b.w / 2; 
+                        const d2 = b.d / 2;
+
+                        // 頂点定義
+                        // I: InnerLine(壁面境界/起点), O: Outer(建物外側), B: Back(建物奥側)
+                        // 全ての頂点で、幅を (w2 + k) とすることで先細りを完全に防ぎます。
+                        let pIT_L, pIT_R, pIB_L, pIB_R; // 起点（一番高いライン）
+                        let pOT_L, pOT_R, pOB_L, pOB_R; // 外側先端
+                        let pBT_L, pBT_R, pBB_L, pBB_R; // 奥側先端
+
+                        if (sr.visorFace === 'pz') {
+                            // 起点ライン (Yは高い位置)
+                            pIT_L = [-w2-k, t, d2]; pIT_R = [w2+k, t, d2];
+                            pIB_L = [-w2-k, 0, d2]; pIB_R = [w2+k, 0, d2];
+                            // 外側 (Z方向に+e, Y方向に-dropOuter)
+                            pOT_L = [-w2-k, -dropOuter+t, d2+e]; pOT_R = [w2+k, -dropOuter+t, d2+e];
+                            pOB_L = [-w2-k, -dropOuter, d2+e];   pOB_R = [w2+k, -dropOuter, d2+e];
+                            // 奥側 (Z方向に-backDist, Y方向に-dropInner)
+                            pBT_L = [-w2-k, -dropInner+t, d2-backDist]; pBT_R = [w2+k, -dropInner+t, d2-backDist];
+                            pBB_L = [-w2-k, -dropInner, d2-backDist];   pBB_R = [w2+k, -dropInner, d2-backDist];
+                        } else if (sr.visorFace === 'nz') {
+                            pIT_L = [w2+k, t, -d2]; pIT_R = [-w2-k, t, -d2];
+                            pIB_L = [w2+k, 0, -d2]; pIB_R = [-w2-k, 0, -d2];
+                            pOT_L = [w2+k, -dropOuter+t, -d2-e]; pOT_R = [-w2-k, -dropOuter+t, -d2-e];
+                            pOB_L = [w2+k, -dropOuter, -d2-e];   pOB_R = [-w2-k, -dropOuter, -d2-e];
+                            pBT_L = [w2+k, -dropInner+t, -d2+backDist]; pBT_R = [-w2-k, -dropInner+t, -d2+backDist];
+                            pBB_L = [w2+k, -dropInner, -d2+backDist];   pBB_R = [-w2-k, -dropInner, -d2+backDist];
+                        } else if (sr.visorFace === 'px') {
+                            pIT_L = [w2, t, d2+k]; pIT_R = [w2, t, -d2-k];
+                            pIB_L = [w2, 0, d2+k]; pIB_R = [w2, 0, -d2-k];
+                            pOT_L = [w2+e, -dropOuter+t, d2+k]; pOT_R = [w2+e, -dropOuter+t, -d2-k];
+                            pOB_L = [w2+e, -dropOuter, d2+k];   pOB_R = [w2+e, -dropOuter, -d2-k];
+                            pBT_L = [w2-backDist, -dropInner+t, d2+k]; pBT_R = [w2-backDist, -dropInner+t, -d2-k];
+                            pBB_L = [w2-backDist, -dropInner, d2+k];   pBB_R = [w2-backDist, -dropInner, -d2-k];
+                        } else if (sr.visorFace === 'nx') {
+                            pIT_L = [-w2, t, -d2-k]; pIT_R = [-w2, t, d2+k];
+                            pIB_L = [-w2, 0, -d2-k]; pIB_R = [-w2, 0, d2+k];
+                            pOT_L = [-w2-e, -dropOuter+t, -d2-k]; pOT_R = [-w2-e, -dropOuter+t, d2+k];
+                            pOB_L = [-w2-e, -dropOuter, -d2-k];   pOB_R = [-w2-e, -dropOuter, d2+k];
+                            pBT_L = [-w2+backDist, -dropInner+t, -d2-k]; pBT_R = [-w2+backDist, -dropInner+t, d2+k];
+                            pBB_L = [-w2+backDist, -dropInner, -d2-k];   pBB_R = [-w2+backDist, -dropInner, d2+k];
+                        }
+
+                        // --- 面の構成 ---
+                        // 1. 外側（建物がない側）の屋根
+                        addRoofQuad(pIT_L, pIT_R, pOT_R, pOT_L); // 上面
+                        addRoofQuad(pIB_R, pIB_L, pOB_L, pOB_R); // 底面
+                        addRoofQuad(pOT_R, pOT_L, pOB_L, pOB_R); // 先端断面（鼻隠し）
+
+                        // 2. 内側（建物がある奥側）の屋根
+                        addRoofQuad(pBT_L, pBT_R, pIT_R, pIT_L); // 上面
+                        addRoofQuad(pIB_R, pIB_L, pBB_L, pBB_R); // 底面
+                        addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R); // 奥側断面
+
+                        // 3. 側面（ケラバ：への字の形を作る）
+                        // 左側面
+                        addRoofQuad(pIT_L, pIB_L, pOB_L, pOT_L); // 外側半分
+                        addRoofQuad(pBT_L, pBB_L, pIB_L, pIT_L); // 内側半分
+                        // 右側面
+                        addRoofQuad(pOT_R, pOB_R, pIB_R, pIT_R); // 外側半分
+                        addRoofQuad(pIT_R, pIB_R, pBB_R, pBT_R); // 内側半分
+} else {
+    // ==========================================
+    // 2. 1階壁面が2階より出ている場合（下屋・回り込み）
+    // ==========================================
+    const max_out = Math.max(sr.out_nx, sr.out_px, sr.out_nz, sr.out_pz);
+    if (max_out > 0) {
+        const H_max = max_out * slope; 
+        const H_out_eaves = e * slope;
+        
+        const k = sr.keraba || 300; // ケラバの出
+        const backDist = 300;       // 奥側への折り返し距離
+        const dropInner = backDist * slope; // 奥側への下げ幅
+
+        const e_nx = e * (sr.out_nx / max_out);
+        const e_px = e * (sr.out_px / max_out);
+        const e_nz = e * (sr.out_nz / max_out);
+        const e_pz = e * (sr.out_pz / max_out);
+
+        const x_wall_L = -b.w / 2; const x_wall_R = b.w / 2;
+        const z_wall_B = -b.d / 2; const z_wall_F = b.d / 2;
+
+        const x_in_L = x_wall_L + sr.out_nx; const x_in_R = x_wall_R - sr.out_px;
+        const z_in_B = z_wall_B + sr.out_nz; const z_in_F = z_wall_F - sr.out_pz;
+
+        const x_out_L = x_wall_L - e_nx; const x_out_R = x_wall_R + e_px;
+        const z_out_B = z_wall_B - e_nz; const z_out_F = z_wall_F + e_pz;
+
+        // +Z面 (手前)
+        if (sr.out_pz > 0) { 
+            let x_L_in = x_in_L, x_L_out = x_out_L;
+            let x_R_in = x_in_R, x_R_out = x_out_R;
+            
+            // 隣に下屋がない場合はケラバを出す
+            if (sr.out_nx === 0) { x_L_in = x_wall_L - k; x_L_out = x_wall_L - k; }
+            if (sr.out_px === 0) { x_R_in = x_wall_R + k; x_R_out = x_wall_R + k; }
+            
+            const pIT_L = [x_L_in, H_max+t, z_in_F], pIT_R = [x_R_in, H_max+t, z_in_F];
+            const pIB_L = [x_L_in, H_max, z_in_F],   pIB_R = [x_R_in, H_max, z_in_F];
+            const pOT_L = [x_L_out, -H_out_eaves+t, z_out_F], pOT_R = [x_R_out, -H_out_eaves+t, z_out_F];
+            const pOB_L = [x_L_out, -H_out_eaves, z_out_F],   pOB_R = [x_R_out, -H_out_eaves, z_out_F];
+
+            // メイン屋根
+            addRoofQuad(pIT_L, pIT_R, pOT_R, pOT_L); 
+            addRoofQuad(pIB_R, pIB_L, pOB_L, pOB_R); 
+            addRoofQuad(pOT_R, pOT_L, pOB_L, pOB_R); 
+
+            // 左端(-X側)が切れている場合の「への字」折り返し
+            if (sr.out_nx === 0) { 
+                const pBT_L = [x_wall_L - k, H_max-dropInner+t, z_in_F - backDist];
+                const pBT_R = [x_wall_L, H_max-dropInner+t, z_in_F - backDist];
+                const pBB_L = [x_wall_L - k, H_max-dropInner, z_in_F - backDist];
+                const pBB_R = [x_wall_L, H_max-dropInner, z_in_F - backDist];
+                const piT_R = [x_wall_L, H_max+t, z_in_F];
+                const piB_R = [x_wall_L, H_max, z_in_F];
+                
+                addRoofQuad(pBT_L, pBT_R, piT_R, pIT_L); // 上
+                addRoofQuad(piB_R, pIB_L, pBB_L, pBB_R); // 底
+                addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R); // 奥側断面
+                addRoofQuad(pIT_L, pIB_L, pOB_L, pOT_L); // 外側面
+                addRoofQuad(pBT_L, pBB_L, pIB_L, pIT_L); // 内側面（への字）
+                
+                addWallTri([x_wall_L, H_max, z_in_F], [x_wall_L, 0, z_in_F], [x_wall_L, 0, z_wall_F]);
+            }
+            // 右端(+X側)が切れている場合の「への字」折り返し
+            if (sr.out_px === 0) { 
+                const pBT_L = [x_wall_R, H_max-dropInner+t, z_in_F - backDist];
+                const pBT_R = [x_wall_R + k, H_max-dropInner+t, z_in_F - backDist];
+                const pBB_L = [x_wall_R, H_max-dropInner, z_in_F - backDist];
+                const pBB_R = [x_wall_R + k, H_max-dropInner, z_in_F - backDist];
+                const piT_L = [x_wall_R, H_max+t, z_in_F];
+                const piB_L = [x_wall_R, H_max, z_in_F];
+
+                addRoofQuad(pBT_L, pBT_R, pIT_R, piT_L);
+                addRoofQuad(pIB_R, piB_L, pBB_L, pBB_R);
+                addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R);
+                addRoofQuad(pOT_R, pOB_R, pIB_R, pIT_R); // 外側面
+                addRoofQuad(pIT_R, pIB_R, pBB_R, pBT_R); // 内側面（への字）
+                
+                addWallTri([x_wall_R, H_max, z_in_F], [x_wall_R, 0, z_wall_F], [x_wall_R, 0, z_in_F]);
+            }
+        }
+        
+        // -Z面 (奥)
+        if (sr.out_nz > 0) {
+            let x_inR = x_in_R, x_outR = x_out_R;
+            let x_inL = x_in_L, x_outL = x_out_L;
+
+            if (sr.out_px === 0) { x_inR = x_wall_R + k; x_outR = x_wall_R + k; }
+            if (sr.out_nx === 0) { x_inL = x_wall_L - k; x_outL = x_wall_L - k; }
+
+            const pIT_R = [x_inR, H_max+t, z_in_B], pIT_L = [x_inL, H_max+t, z_in_B];
+            const pIB_R = [x_inR, H_max, z_in_B],   pIB_L = [x_inL, H_max, z_in_B];
+            const pOT_R = [x_outR, -H_out_eaves+t, z_out_B], pOT_L = [x_outL, -H_out_eaves+t, z_out_B];
+            const pOB_R = [x_outR, -H_out_eaves, z_out_B],   pOB_L = [x_outL, -H_out_eaves, z_out_B];
+
+            addRoofQuad(pIT_R, pIT_L, pOT_L, pOT_R);
+            addRoofQuad(pIB_L, pIB_R, pOB_R, pOB_L);
+            addRoofQuad(pOT_L, pOT_R, pOB_R, pOB_L);
+
+            if (sr.out_px === 0) {
+                const pBT_R = [x_wall_R + k, H_max-dropInner+t, z_in_B + backDist];
+                const pBT_L = [x_wall_R, H_max-dropInner+t, z_in_B + backDist];
+                const pBB_R = [x_wall_R + k, H_max-dropInner, z_in_B + backDist];
+                const pBB_L = [x_wall_R, H_max-dropInner, z_in_B + backDist];
+                const piT_L = [x_wall_R, H_max+t, z_in_B];
+                const piB_L = [x_wall_R, H_max, z_in_B];
+
+                addRoofQuad(pBT_R, pBT_L, piT_L, pIT_R);
+                addRoofQuad(piB_L, pIB_R, pBB_R, pBB_L);
+                addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
+                addRoofQuad(pIT_R, pIB_R, pOB_R, pOT_R); 
+                addRoofQuad(pBT_R, pBB_R, pIB_R, pIT_R); 
+
+                addWallTri([x_wall_R, H_max, z_in_B], [x_wall_R, 0, z_in_B], [x_wall_R, 0, z_wall_B]);
+            }
+            if (sr.out_nx === 0) {
+                const pBT_R = [x_wall_L, H_max-dropInner+t, z_in_B + backDist];
+                const pBT_L = [x_wall_L - k, H_max-dropInner+t, z_in_B + backDist];
+                const pBB_R = [x_wall_L, H_max-dropInner, z_in_B + backDist];
+                const pBB_L = [x_wall_L - k, H_max-dropInner, z_in_B + backDist];
+                const piT_R = [x_wall_L, H_max+t, z_in_B];
+                const piB_R = [x_wall_L, H_max, z_in_B];
+
+                addRoofQuad(pBT_R, pBT_L, pIT_L, piT_R);
+                addRoofQuad(pIB_L, piB_R, pBB_R, pBB_L);
+                addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
+                addRoofQuad(pOT_L, pOB_L, pIB_L, pIT_L); 
+                addRoofQuad(pIT_L, pIB_L, pBB_L, pBT_L); 
+
+                addWallTri([x_wall_L, H_max, z_in_B], [x_wall_L, 0, z_wall_B], [x_wall_L, 0, z_in_B]);
+            }
+        }
+        
+        // +X面 (右)
+        if (sr.out_px > 0) {
+            let z_inB = z_in_B, z_outB = z_out_B; 
+            let z_inF = z_in_F, z_outF = z_out_F; 
+
+            if (sr.out_nz === 0) { z_inB = z_wall_B - k; z_outB = z_wall_B - k; }
+            if (sr.out_pz === 0) { z_inF = z_wall_F + k; z_outF = z_wall_F + k; }
+
+            const pIT_B = [x_in_R, H_max+t, z_inB], pIT_F = [x_in_R, H_max+t, z_inF];
+            const pIB_B = [x_in_R, H_max, z_inB],   pIB_F = [x_in_R, H_max, z_inF];
+            const pOT_B = [x_out_R, -H_out_eaves+t, z_outB], pOT_F = [x_out_R, -H_out_eaves+t, z_outF];
+            const pOB_B = [x_out_R, -H_out_eaves, z_outB],   pOB_F = [x_out_R, -H_out_eaves, z_outF];
+
+            addRoofQuad(pIT_B, pIT_F, pOT_F, pOT_B);
+            addRoofQuad(pIB_F, pIB_B, pOB_B, pOB_F);
+            addRoofQuad(pOT_F, pOT_B, pOB_B, pOB_F);
+
+            if (sr.out_nz === 0) {
+                const pBT_B = [x_in_R - backDist, H_max-dropInner+t, z_wall_B - k];
+                const pBT_F = [x_in_R - backDist, H_max-dropInner+t, z_wall_B];
+                const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k];
+                const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_B];
+                const piT_F = [x_in_R, H_max+t, z_wall_B];
+                const piB_F = [x_in_R, H_max, z_wall_B];
+
+                addRoofQuad(pBT_B, pBT_F, piT_F, pIT_B);
+                addRoofQuad(piB_F, pIB_B, pBB_B, pBB_F);
+                addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
+                addRoofQuad(pIT_B, pIB_B, pOB_B, pOT_B); 
+                addRoofQuad(pBT_B, pBB_B, pIB_B, pIT_B); 
+
+                addWallTri([x_in_R, H_max, z_wall_B], [x_wall_R, 0, z_wall_B], [x_in_R, 0, z_wall_B]);
+            }
+            if (sr.out_pz === 0) {
+                const pBT_B = [x_in_R - backDist, H_max-dropInner+t, z_wall_F];
+                const pBT_F = [x_in_R - backDist, H_max-dropInner+t, z_wall_F + k];
+                const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_F];
+                const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k];
+                const piT_B = [x_in_R, H_max+t, z_wall_F];
+                const piB_B = [x_in_R, H_max, z_wall_F];
+
+                addRoofQuad(pBT_B, pBT_F, pIT_F, piT_B);
+                addRoofQuad(pIB_F, piB_B, pBB_B, pBB_F);
+                addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
+                addRoofQuad(pOT_F, pOB_F, pIB_F, pIT_F); 
+                addRoofQuad(pIT_F, pIB_F, pBB_F, pBT_F); 
+
+                addWallTri([x_in_R, H_max, z_wall_F], [x_in_R, 0, z_wall_F], [x_wall_R, 0, z_wall_F]);
+            }
+        }
+        
+        // -X面 (左)
+        if (sr.out_nx > 0) {
+            let z_inF = z_in_F, z_outF = z_out_F;
+            let z_inB = z_in_B, z_outB = z_out_B;
+
+            if (sr.out_pz === 0) { z_inF = z_wall_F + k; z_outF = z_wall_F + k; }
+            if (sr.out_nz === 0) { z_inB = z_wall_B - k; z_outB = z_wall_B - k; }
+
+            const pIT_F = [x_in_L, H_max+t, z_inF], pIT_B = [x_in_L, H_max+t, z_inB];
+            const pIB_F = [x_in_L, H_max, z_inF],   pIB_B = [x_in_L, H_max, z_inB];
+            const pOT_F = [x_out_L, -H_out_eaves+t, z_outF], pOT_B = [x_out_L, -H_out_eaves+t, z_outB];
+            const pOB_F = [x_out_L, -H_out_eaves, z_outF],   pOB_B = [x_out_L, -H_out_eaves, z_outB];
+
+            addRoofQuad(pIT_F, pIT_B, pOT_B, pOT_F);
+            addRoofQuad(pIB_B, pIB_F, pOB_F, pOB_B);
+            addRoofQuad(pOT_B, pOT_F, pOB_F, pOB_B);
+
+            if (sr.out_pz === 0) {
+                const pBT_F = [x_in_L + backDist, H_max-dropInner+t, z_wall_F + k];
+                const pBT_B = [x_in_L + backDist, H_max-dropInner+t, z_wall_F];
+                const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k];
+                const pBB_B = [x_in_L + backDist, H_max-dropInner, z_wall_F];
+                const piT_B = [x_in_L, H_max+t, z_wall_F];
+                const piB_B = [x_in_L, H_max, z_wall_F];
+
+                addRoofQuad(pBT_F, pBT_B, piT_B, pIT_F);
+                addRoofQuad(piB_B, pIB_F, pBB_F, pBB_B);
+                addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
+                addRoofQuad(pIT_F, pIB_F, pOB_F, pOT_F); 
+                addRoofQuad(pBT_F, pBB_F, pIB_F, pIT_F); 
+
+                addWallTri([x_in_L, H_max, z_wall_F], [x_wall_L, 0, z_wall_F], [x_in_L, 0, z_wall_F]);
+            }
+            if (sr.out_nz === 0) {
+                const pBT_F = [x_in_L + backDist, H_max-dropInner+t, z_wall_B];
+                const pBT_B = [x_in_L + backDist, H_max-dropInner+t, z_wall_B - k];
+                const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_B];
+                const pBB_B = [x_in_L + backDist, H_max-dropInner, z_wall_B - k];
+                const piT_F = [x_in_L, H_max+t, z_wall_B];
+                const piB_F = [x_in_L, H_max, z_wall_B];
+
+                addRoofQuad(pBT_F, pBT_B, pIT_B, piT_F);
+                addRoofQuad(pIB_B, piB_F, pBB_F, pBB_B);
+                addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
+                addRoofQuad(pOT_B, pOB_B, pIB_B, pIT_B); 
+                addRoofQuad(pIT_B, pIB_B, pBB_B, pBT_B); 
+
+                addWallTri([x_in_L, H_max, z_wall_B], [x_in_L, 0, z_wall_B], [x_wall_L, 0, z_wall_B]);
+            }
+        }
+    }
+}
+
+                    // ジオメトリ生成とグループ追加
+                    if (roofVerts.length > 0) {
+                        const rGeo = new THREE.BufferGeometry();
+                        rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(roofVerts), 3));
+                        rGeo.setIndex(roofInds);
+                        rGeo.computeVertexNormals();
+                        skirtGroup.add(new THREE.Mesh(rGeo, roofMat));
+                        skirtGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat));
+                    }
+                    if (wallVerts.length > 0) {
+                        const wGeo = new THREE.BufferGeometry();
+                        wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts), 3));
+                        wGeo.setIndex(wallInds);
+                        wGeo.computeVertexNormals();
+                        const wMat = (b.id === selectedId) ? selectedMat : wallMat;
+                        skirtGroup.add(new THREE.Mesh(wGeo, wMat));
+                        skirtGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat));
+                    }
+                    houseGroup.add(skirtGroup);
+                }
+
+            });
+            renderer.render(scene, camera);
+        }
+
+        saveState();
+
+        // --- マウス操作設定 ---
+        const raycaster = new THREE.Raycaster();
+        const pointer = new THREE.Vector2();
+        const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        let activePlane = new THREE.Plane(); 
+
+        function snap(val) { return Math.round(val / 500) * 500; }
+
+        let isDrawing = false;
+        let drawStartPt = new THREE.Vector3();
+        let currentDrawObj = null; 
+
+        // プッシュプル関連
+        let isExtruding = false;
+        let extrudeTargetId = null;
+        let extrudeNormal = new THREE.Vector3();
+        let connectedBlocks = []; 
+        let extrudeStartY = 0;
+        let extrudeStartPt = new THREE.Vector3(); 
+
+        let downPointer = new THREE.Vector2(); 
+
+        function getGroundIntersect(e) {
+            pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(pointer, camera);
+            const target = new THREE.Vector3();
+            raycaster.ray.intersectPlane(groundPlane, target);
+            if(target) {
+                target.x = snap(target.x);
+                target.z = snap(target.z);
+            }
+            return target;
+        }
+
+        function updateHoverMesh(b, normal) {
+            const baseY = b.y || 0;
+            if (normal.y > 0.5) { 
+                hoverMesh.scale.set(b.w, b.d, 1);
+                hoverMesh.rotation.set(-Math.PI/2, 0, 0);
+                hoverMesh.position.set(b.x, baseY + b.h + 2, b.z);
+            } else if (normal.x > 0.5) { 
+                hoverMesh.scale.set(b.d, b.h, 1);
+                hoverMesh.rotation.set(0, Math.PI/2, 0);
+                hoverMesh.position.set(b.x + b.w/2 + 2, baseY + b.h/2, b.z);
+            } else if (normal.x < -0.5) { 
+                hoverMesh.scale.set(b.d, b.h, 1);
+                hoverMesh.rotation.set(0, -Math.PI/2, 0);
+                hoverMesh.position.set(b.x - b.w/2 - 2, baseY + b.h/2, b.z);
+            } else if (normal.z > 0.5) { 
+                hoverMesh.scale.set(b.w, b.h, 1);
+                hoverMesh.rotation.set(0, 0, 0);
+                hoverMesh.position.set(b.x, baseY + b.h/2, b.z + b.d/2 + 2);
+            } else if (normal.z < -0.5) { 
+                hoverMesh.scale.set(b.w, b.h, 1);
+                hoverMesh.rotation.set(0, Math.PI, 0);
+                hoverMesh.position.set(b.x, baseY + b.h/2, b.z - b.d/2 - 2);
+            }
+            hoverMesh.visible = true;
+        }
+
+        window.setTool = function(toolName) {
+            currentTool = toolName;
+            waitingForVisorBlockId = null; // ★ 追加: ツール切り替え時に面選択状態をキャンセル
+
+            const btnDraw = document.getElementById('btn-draw');
+            const btnExtrude = document.getElementById('btn-extrude');
+            const modeText = document.getElementById('mode-text');
+            const modeDesc = document.getElementById('mode-desc');
+
+            if (btnDraw && btnExtrude) {
+                btnDraw.classList.toggle('active', toolName === 'DRAW');
+                btnExtrude.classList.toggle('active', toolName === 'EXTRUDE');
+            }
+
+            tooltip.style.display = 'none';
+            hoverMesh.visible = false;
+            document.body.style.cursor = 'default';
+            
+            selectedId = null;
+            rebuildMeshes();
+
+            if (toolName === 'DRAW') {
+                modeText.innerText = '【平面作図モード】';
+                modeText.style.color = '#d9534f'; 
+                modeDesc.innerText = '地面をドラッグして四角形を描いてください (500mmスナップ)';
+            } else if (toolName === 'EXTRUDE') {
+                modeText.innerText = '【プッシュプルモード】';
+                modeText.style.color = '#d9534f'; 
+                modeDesc.innerText = '面をドラッグして伸縮 / 任意の面＋Shiftでブロック追加';
+            } else {
+                modeText.innerText = '【選択・視点移動】';
+                modeText.style.color = '#005a9e'; 
+                modeDesc.innerText = '左クリック: 物体を選択 (Deleteで削除) / 左ドラッグ: 回転 / 右ドラッグ: 平行移動';
+            }
+        };
+
+        window.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0) return; 
+            if (e.target.tagName !== 'CANVAS') return; 
+
+            downPointer.set(e.clientX, e.clientY);
+
+            pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(pointer, camera);
+
+            if (currentTool === 'DRAW') {
+                const pt = getGroundIntersect(e);
+                if (!pt) return;
+                isDrawing = true;
+                drawStartPt.copy(pt);
+                controls.enabled = false;
+
+            } else if (currentTool === 'EXTRUDE') {
+                const intersects = raycaster.intersectObjects(interactiveMeshes);
+                if (intersects.length > 0) {
+                    const hit = intersects[0];
+                    const hitId = hit.object.userData.id;
+                    const baseBlock = buildingData.find(d => d.id === hitId);
+
+                    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+                    extrudeNormal.set(0,0,0);
+                    
+                    if (Math.abs(normal.y - 1) < 0.1) extrudeNormal.set(0,1,0); 
+                    else if (Math.abs(normal.y + 1) < 0.1) return; 
+                    else if (Math.abs(normal.x - 1) < 0.1) extrudeNormal.set(1,0,0); 
+                    else if (Math.abs(normal.x + 1) < 0.1) extrudeNormal.set(-1,0,0); 
+                    else if (Math.abs(normal.z - 1) < 0.1) extrudeNormal.set(0,0,1); 
+                    else if (Math.abs(normal.z + 1) < 0.1) extrudeNormal.set(0,0,-1); 
+                    else return;
+
+                    if (extrudeNormal.y > 0 && baseBlock.roof) return;
+
+                    isExtruding = true;
+                    connectedBlocks = [];
+
+                    if (extrudeNormal.y > 0) {
+                        activePlane.setFromNormalAndCoplanarPoint(
+                            camera.getWorldDirection(new THREE.Vector3()), hit.point
+                        );
+                        extrudeStartY = hit.point.y;
+
+                        if (e.shiftKey) {
+                            const newY = (baseBlock.y || 0) + baseBlock.h;
+                            const newBlock = {
+                                id: Date.now().toString(),
+                                x: baseBlock.x, y: newY, z: baseBlock.z,
+                                w: baseBlock.w, d: baseBlock.d, h: 500 
+                            };
+                            buildingData.push(newBlock);
+                            extrudeTargetId = newBlock.id;
+                            connectedBlocks.push({ block: newBlock, startBox: { ...newBlock }, type: 'resize' });
+                            
+                            rebuildMeshes(); 
+                            meshMap[newBlock.id].mesh.material = activeMat;
+                        } else {
+                            extrudeTargetId = hitId;
+                            const stackedBlocks = getStackedBlocks([baseBlock]);
+                            
+                            stackedBlocks.forEach(ob => {
+                                if (ob.id === baseBlock.id) {
+                                    connectedBlocks.push({ block: ob, startBox: { ...ob }, type: 'resize' });
+                                } else {
+                                    connectedBlocks.push({ block: ob, startBox: { ...ob }, type: 'translate' });
+                                }
+                                meshMap[ob.id].mesh.material = activeMat;
+                            });
+                        }
+                    } 
+                    else {
+                        if (e.shiftKey) {
+                            const newBlock = {
+                                id: Date.now().toString(),
+                                x: baseBlock.x, y: baseBlock.y || 0, z: baseBlock.z,
+                                w: baseBlock.w, d: baseBlock.d, h: baseBlock.h 
+                            };
+                            if (extrudeNormal.x !== 0) {
+                                newBlock.w = 500;
+                                newBlock.x = baseBlock.x + (baseBlock.w / 2 + 250) * extrudeNormal.x;
+                            } else if (extrudeNormal.z !== 0) {
+                                newBlock.d = 500;
+                                newBlock.z = baseBlock.z + (baseBlock.d / 2 + 250) * extrudeNormal.z;
+                            }
+                            buildingData.push(newBlock);
+                            extrudeTargetId = newBlock.id;
+                            connectedBlocks.push({ block: newBlock, startBox: { ...newBlock }, type: 'resize', normal: extrudeNormal.clone() });
+                            
+                            rebuildMeshes(); 
+                            meshMap[newBlock.id].mesh.material = activeMat;
+                        } else {
+                            extrudeTargetId = hitId;
+                            
+                            buildingData.forEach(ob => {
+                                if (ob.id === baseBlock.id) return;
+                                
+                                let isTouchingOpposite = false;
+                                if (extrudeNormal.x !== 0) {
+                                    const targetEdge = baseBlock.x + (baseBlock.w/2) * extrudeNormal.x;
+                                    const obOppositeEdge = ob.x - (ob.w/2) * extrudeNormal.x; 
+                                    
+                                    if (Math.abs(obOppositeEdge - targetEdge) < 1) { 
+                                        const overlapZ = Math.abs(ob.z - baseBlock.z) * 2 < (ob.d + baseBlock.d) - 1;
+                                        const overlapY = Math.max((ob.y||0), (baseBlock.y||0)) < Math.min((ob.y||0)+ob.h, (baseBlock.y||0)+baseBlock.h) - 1;
+                                        if (overlapZ && overlapY) isTouchingOpposite = true;
+                                    }
+                                } else if (extrudeNormal.z !== 0) {
+                                    const targetEdge = baseBlock.z + (baseBlock.d/2) * extrudeNormal.z;
+                                    const obOppositeEdge = ob.z - (ob.d/2) * extrudeNormal.z;
+                                    
+                                    if (Math.abs(obOppositeEdge - targetEdge) < 1) { 
+                                        const overlapX = Math.abs(ob.x - baseBlock.x) * 2 < (ob.w + baseBlock.w) - 1;
+                                        const overlapY = Math.max((ob.y||0), (baseBlock.y||0)) < Math.min((ob.y||0)+ob.h, (baseBlock.y||0)+baseBlock.h) - 1;
+                                        if (overlapX && overlapY) isTouchingOpposite = true;
+                                    }
+                                }
+                                
+                                if (isTouchingOpposite) {
+                                    connectedBlocks.push({ block: ob, startBox: { ...ob }, type: 'resize', normal: extrudeNormal.clone().negate() });
+                                    meshMap[ob.id].mesh.material = activeMat; 
+                                }
+                            });
+                            connectedBlocks.push({ block: baseBlock, startBox: { ...baseBlock }, type: 'resize', normal: extrudeNormal.clone() });
+                            meshMap[extrudeTargetId].mesh.material = activeMat;
+                        }
+                        
+                        const pt = getGroundIntersect(e);
+                        if(pt) extrudeStartPt.copy(pt);
+                    }
+                    
+                    controls.enabled = false;
+                }
+            }
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            if (isDrawing) {
+                const pt = getGroundIntersect(e);
+                if (!pt) return;
+
+                const w = Math.abs(pt.x - drawStartPt.x);
+                const d = Math.abs(pt.z - drawStartPt.z);
+                const cx = (pt.x + drawStartPt.x) / 2;
+                const cz = (pt.z + drawStartPt.z) / 2;
+                const h = 100; 
+
+                if (currentDrawObj) {
+                    houseGroup.remove(currentDrawObj.mesh, currentDrawObj.line);
+                    currentDrawObj.mesh.geometry.dispose();
+                }
+
+                if (w > 0 && d > 0) {
+                    const geo = new THREE.BoxGeometry(w, h, d);
+                    const mesh = new THREE.Mesh(geo, activeMat);
+                    mesh.position.set(cx, h / 2, cz);
+                    const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+                    line.position.copy(mesh.position);
+                    houseGroup.add(mesh, line);
+                    currentDrawObj = { mesh, line, x: cx, z: cz, w: w, d: d, h: h };
+                    
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                    tooltip.innerText = `間口: ${(w / 1000).toFixed(1)} m\n奥行: ${(d / 1000).toFixed(1)} m`;
+                } else {
+                    tooltip.style.display = 'none';
+                }
+                renderer.render(scene, camera);
+
+            } else if (isExtruding) {
+                let tooltipText = "";
+
+                if (extrudeNormal.y > 0) {
+                    raycaster.setFromCamera(pointer, camera);
+                    const target = new THREE.Vector3();
+                    raycaster.ray.intersectPlane(activePlane, target);
+                    if(target) {
+                        const deltaY = target.y - extrudeStartY;
+                        const mainCb = connectedBlocks.find(cb => cb.type === 'resize');
+                        
+                        let newH = snap(mainCb.startBox.h + deltaY);
+                        if (newH < 500) newH = 500;
+                        
+                        const actualDeltaY = newH - mainCb.startBox.h;
+
+                        connectedBlocks.forEach(cb => {
+                            if (cb.type === 'resize') {
+                                cb.block.h = newH;
+                            } else if (cb.type === 'translate') {
+                                cb.block.y = cb.startBox.y + actualDeltaY;
+                            }
+                        });
+                        tooltipText = `階高: ${(newH / 1000).toFixed(1)} m`;
+                    }
+                } else if (extrudeNormal.x !== 0) {
+                    const pt = getGroundIntersect(e);
+                    if(pt) {
+                        const deltaX = pt.x - extrudeStartPt.x;
+                        let validDeltaX = snap(deltaX);
+                        let minDeltaX = -Infinity;
+                        let maxDeltaX = Infinity;
+
+                        for (let cb of connectedBlocks) {
+                            if (cb.type !== 'resize') continue;
+                            const startMovingEdge = cb.startBox.x + (cb.startBox.w/2) * cb.normal.x;
+                            const fixedEdge = cb.startBox.x - (cb.startBox.w/2) * cb.normal.x;
+
+                            if (cb.normal.x > 0) {
+                                const limit = fixedEdge + 500 - startMovingEdge;
+                                if (limit > minDeltaX) minDeltaX = limit;
+                            } else if (cb.normal.x < 0) {
+                                const limit = fixedEdge - 500 - startMovingEdge;
+                                if (limit < maxDeltaX) maxDeltaX = limit;
+                            }
+                        }
+
+                        if (validDeltaX < minDeltaX) validDeltaX = minDeltaX;
+                        if (validDeltaX > maxDeltaX) validDeltaX = maxDeltaX;
+
+                        connectedBlocks.forEach(cb => {
+                            if (cb.type !== 'resize') return;
+                            const startMovingEdge = cb.startBox.x + (cb.startBox.w/2) * cb.normal.x;
+                            const fixedEdge = cb.startBox.x - (cb.startBox.w/2) * cb.normal.x;
+                            const movingEdge = startMovingEdge + validDeltaX;
+                            
+                            cb.block.w = Math.abs(movingEdge - fixedEdge);
+                            cb.block.x = (movingEdge + fixedEdge) / 2;
+                            if (cb.block.id === extrudeTargetId) tooltipText = `間口: ${(cb.block.w / 1000).toFixed(1)} m`;
+                        });
+                    }
+                } else if (extrudeNormal.z !== 0) {
+                    const pt = getGroundIntersect(e);
+                    if(pt) {
+                        const deltaZ = pt.z - extrudeStartPt.z;
+                        let validDeltaZ = snap(deltaZ);
+                        let minDeltaZ = -Infinity;
+                        let maxDeltaZ = Infinity;
+
+                        for (let cb of connectedBlocks) {
+                            if (cb.type !== 'resize') continue;
+                            const startMovingEdge = cb.startBox.z + (cb.startBox.d/2) * cb.normal.z;
+                            const fixedEdge = cb.startBox.z - (cb.startBox.d/2) * cb.normal.z;
+
+                            if (cb.normal.z > 0) {
+                                const limit = fixedEdge + 500 - startMovingEdge;
+                                if (limit > minDeltaZ) minDeltaZ = limit;
+                            } else if (cb.normal.z < 0) {
+                                const limit = fixedEdge - 500 - startMovingEdge;
+                                if (limit < maxDeltaZ) maxDeltaZ = limit;
+                            }
+                        }
+
+                        if (validDeltaZ < minDeltaZ) validDeltaZ = minDeltaZ;
+                        if (validDeltaZ > maxDeltaZ) validDeltaZ = maxDeltaZ;
+
+                        connectedBlocks.forEach(cb => {
+                            if (cb.type !== 'resize') return;
+                            const startMovingEdge = cb.startBox.z + (cb.startBox.d/2) * cb.normal.z;
+                            const fixedEdge = cb.startBox.z - (cb.startBox.d/2) * cb.normal.z;
+                            const movingEdge = startMovingEdge + validDeltaZ;
+                            
+                            cb.block.d = Math.abs(movingEdge - fixedEdge);
+                            cb.block.z = (movingEdge + fixedEdge) / 2;
+                            if (cb.block.id === extrudeTargetId) tooltipText = `奥行: ${(cb.block.d / 1000).toFixed(1)} m`;
+                        });
+                    }
+                }
+                
+                updateAllSkirtRoofs();
+                rebuildMeshes(); 
+                
+                const mainB = buildingData.find(d => d.id === extrudeTargetId);
+                updateHoverMesh(mainB, extrudeNormal);
+                
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+                tooltip.innerText = tooltipText;
+
+            } else if (currentTool === 'EXTRUDE' && !isExtruding) {
+                raycaster.setFromCamera(pointer, camera);
+                const intersects = raycaster.intersectObjects(interactiveMeshes);
+                
+                if (intersects.length > 0) {
+                    const hit = intersects[0];
+                    const b = buildingData.find(d => d.id === hit.object.userData.id);
+                    if (b) {
+                        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+                        let nDir = new THREE.Vector3();
+                        if (Math.abs(normal.y - 1) < 0.1) nDir.set(0,1,0);
+                        else if (Math.abs(normal.y + 1) < 0.1) nDir.set(0,-1,0);
+                        else if (Math.abs(normal.x - 1) < 0.1) nDir.set(1,0,0);
+                        else if (Math.abs(normal.x + 1) < 0.1) nDir.set(-1,0,0);
+                        else if (Math.abs(normal.z - 1) < 0.1) nDir.set(0,0,1);
+                        else if (Math.abs(normal.z + 1) < 0.1) nDir.set(0,0,-1);
+
+                        if (nDir.y > 0) {
+                            if (b.roof) {
+                                hoverMesh.visible = false;
+                                document.body.style.cursor = 'default';
+                            } else {
+                                updateHoverMesh(b, nDir);
+                                document.body.style.cursor = e.shiftKey ? 'copy' : 'ns-resize'; 
+                            }
+                        } else if (nDir.x !== 0) {
+                            updateHoverMesh(b, nDir);
+                            document.body.style.cursor = e.shiftKey ? 'copy' : 'ew-resize';
+                        } else if (nDir.z !== 0) {
+                            updateHoverMesh(b, nDir);
+                            document.body.style.cursor = e.shiftKey ? 'copy' : 'ns-resize'; 
+                        } else {
+                            hoverMesh.visible = false;
+                            document.body.style.cursor = 'default';
+                        }
+                    }
+                } else {
+                    hoverMesh.visible = false;
+                    document.body.style.cursor = 'default';
+                }
+                renderer.render(scene, camera);
+            } else {
+                hoverMesh.visible = false;
+                document.body.style.cursor = 'default';
+                renderer.render(scene, camera);
+            }
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (currentTool === 'EXTRUDE' && !isExtruding && hoverMesh.visible && e.key === 'Shift') {
+                document.body.style.cursor = 'copy'; 
+            }
+            if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null) {
+                buildingData = buildingData.filter(b => b.id !== selectedId);
+                selectedId = null;
+                saveState(); 
+                rebuildMeshes();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (currentTool === 'EXTRUDE' && !isExtruding && e.key === 'Shift' && hoverMesh.visible) {
+                if (hoverMesh.rotation.x === -Math.PI/2) document.body.style.cursor = 'ns-resize'; 
+                else if (hoverMesh.rotation.y === Math.PI/2 || hoverMesh.rotation.y === -Math.PI/2) document.body.style.cursor = 'ew-resize';
+                else document.body.style.cursor = 'ns-resize';
+            }
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            const upPointer = new THREE.Vector2(e.clientX, e.clientY);
+            const isClick = downPointer.distanceTo(upPointer) < 5; // ドラッグ(回転)時は発火させない
+
+            if (currentTool === null && isClick && e.target.tagName === 'CANVAS') {
+                pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+                pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+                raycaster.setFromCamera(pointer, camera);
+                const intersects = raycaster.intersectObjects(interactiveMeshes);
+                
+                // ★ 軒庇の「面選択」待機中の場合
+                if (waitingForVisorBlockId) {
+                    if (intersects.length > 0) {
+                        const hit = intersects[0];
+                        const hitId = hit.object.userData.id;
+                        
+                        if (hitId === waitingForVisorBlockId) {
+                            const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+                            let visorFace = null;
+                            if (normal.z > 0.5) visorFace = 'pz';
+                            else if (normal.z < -0.5) visorFace = 'nz';
+                            else if (normal.x > 0.5) visorFace = 'px';
+                            else if (normal.x < -0.5) visorFace = 'nx';
+                            
+                            // 側面がクリックされたら庇を生成
+                            if (visorFace) {
+                                const b = buildingData.find(d => d.id === hitId);
+                                if (b) {
+                                    b.skirtRoof = { isVisor: true, visorFace, eaves: 600, keraba: 300, slope: 4, thick: 150 };
+                                    saveState();
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 処理完了、または背景をクリックしてキャンセルした場合は元に戻す
+                    waitingForVisorBlockId = null;
+                    const modeText = document.getElementById('mode-text');
+                    const modeDesc = document.getElementById('mode-desc');
+                    if (modeText && modeDesc) {
+                        modeText.innerText = '【選択・視点移動】';
+                        modeText.style.color = '#005a9e'; 
+                        modeDesc.innerText = '左クリック: 物体を選択 (Deleteで削除) / 左ドラッグ: 回転 / 右ドラッグ: 平行移動';
+                    }
+                    rebuildMeshes();
+                    return; // ここで処理を終了し、通常の選択処理には進まない
+                }
+
+                // --- 通常の選択処理 ---
+                if (intersects.length > 0) {
+                    selectedId = intersects[0].object.userData.id;
+                } else {
+                    selectedId = null; 
+                }
+                rebuildMeshes();
+            }
+
+            // --- 平面作図の完了処理 ---
+            if (isDrawing) {
+                isDrawing = false;
+                controls.enabled = true;
+                tooltip.style.display = 'none'; 
+                
+                if (currentDrawObj && currentDrawObj.w > 0 && currentDrawObj.d > 0) {
+                    buildingData.push({
+                        id: Date.now().toString(),
+                        x: currentDrawObj.x,
+                        y: 0, 
+                        z: currentDrawObj.z,
+                        w: currentDrawObj.w,
+                        d: currentDrawObj.d,
+                        h: currentDrawObj.h
+                    });
+                    saveState(); 
+                }
+                currentDrawObj = null;
+                rebuildMeshes();
+                window.setTool(null); 
+            }
+
+            // --- プッシュプルの完了処理 ---
+            if (isExtruding) {
+                isExtruding = false;
+                controls.enabled = true;
+                tooltip.style.display = 'none'; 
+                hoverMesh.visible = false;   
+                document.body.style.cursor = 'default';
+
+                extrudeTargetId = null;
+                connectedBlocks = [];
+                saveState(); 
+                rebuildMeshes();
+                window.setTool(null); 
+            }
+        });        
+        controls.addEventListener('change', () => renderer.render(scene, camera));
+        renderer.render(scene, camera); 
+
+        // --- UI構築 ---
+        const gui = new GUI({ title: 'モデリング・ツール', width: 320 });
+        
+        const toolFolder = gui.addFolder('作図ツール');
+        const toolContainer = document.createElement('div');
+        toolContainer.className = 'tool-row';
+        
+        const btnDraw = document.createElement('div');
+        btnDraw.id = 'btn-draw';
+        btnDraw.className = 'tool-btn';
+        btnDraw.innerText = '＋ 平面作図';
+        btnDraw.onclick = (e) => { e.stopPropagation(); window.setTool(currentTool === 'DRAW' ? null : 'DRAW'); };
+
+        const btnExtrude = document.createElement('div');
+        btnExtrude.id = 'btn-extrude';
+        btnExtrude.className = 'tool-btn';
+        btnExtrude.innerText = '⇧ プッシュプル';
+        btnExtrude.onclick = (e) => { e.stopPropagation(); window.setTool(currentTool === 'EXTRUDE' ? null : 'EXTRUDE'); };
+
+        toolContainer.appendChild(btnDraw);
+        toolContainer.appendChild(btnExtrude);
+        toolFolder.domElement.appendChild(toolContainer);
+
+        const roofFolder = gui.addFolder('屋根・庇の追加 (選択中ブロック)');
+        const roofContainer = document.createElement('div');
+        roofContainer.className = 'action-row';
+        
+        const btnGable = document.createElement('div');
+        btnGable.className = 'action-btn';
+        btnGable.style.background = '#007acc';
+        btnGable.innerText = '大屋根(切妻)';
+        btnGable.onclick = () => window.addRoof('切妻');
+        
+        const btnHipped = document.createElement('div');
+        btnHipped.className = 'action-btn';
+        btnHipped.style.background = '#007acc';
+        btnHipped.innerText = '大屋根(寄棟)';
+        btnHipped.onclick = () => window.addRoof('寄棟');
+
+        roofContainer.appendChild(btnGable);
+        roofContainer.appendChild(btnHipped);
+        roofFolder.domElement.appendChild(roofContainer);
+
+        const skirtContainer = document.createElement('div');
+        skirtContainer.className = 'action-row';
+
+        const btnSkirt = document.createElement('div');
+        btnSkirt.className = 'action-btn';
+        btnSkirt.style.background = '#d9534f';
+        btnSkirt.innerText = '庇(下屋)を追加';
+        btnSkirt.onclick = window.addSkirtRoof;
+
+        const btnDelRoof = document.createElement('div');
+        btnDelRoof.className = 'action-btn';
+        btnDelRoof.style.background = '#800';
+        btnDelRoof.innerText = '屋根/庇 削除';
+        btnDelRoof.onclick = window.removeRoof;
+
+        skirtContainer.appendChild(btnSkirt);
+        skirtContainer.appendChild(btnDelRoof);
+        roofFolder.domElement.appendChild(skirtContainer);
+
+        const actionFolder = gui.addFolder('履歴操作 (最大3回)');
+        const actionContainer = document.createElement('div');
+        actionContainer.className = 'action-row';
+        
+        btnUndo = document.createElement('div');
+        btnUndo.className = 'action-btn disabled';
+        btnUndo.innerText = '↺ 元に戻る';
+        btnUndo.onclick = undo;
+        
+        btnRedo = document.createElement('div');
+        btnRedo.className = 'action-btn disabled';
+        btnRedo.innerText = '↻ やり直す';
+        btnRedo.onclick = redo;
+
+        const btnClear = document.createElement('div');
+        btnClear.className = 'action-btn';
+        btnClear.style.background = '#800';
+        btnClear.innerText = '✖ 全消去';
+        btnClear.onclick = () => {
+            buildingData = [];
+            selectedId = null;
+            saveState();
+            rebuildMeshes();
+        };
+
+        actionContainer.appendChild(btnUndo);
+        actionContainer.appendChild(btnRedo);
+        actionContainer.appendChild(btnClear);
+        actionFolder.domElement.appendChild(actionContainer);
+
+        updateActionButtons();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.render(scene, camera);
+        });
+    </script>
+</body>
+</html>
