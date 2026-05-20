@@ -1,6 +1,10 @@
 // cesiumApp.js
 // CesiumJSによる広域配置と高精度マグネットスナップを管理するモジュール
 
+// ★追加：Google Maps APIキーの設定 (インポート文が必要な場合は一番上に記載)
+const googleApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+Cesium.GoogleMaps.defaultApiKey = googleApiKey;
+
 let viewer = null;
 let targetEntity = null;
 // ★追加：透過モード用の状態変数
@@ -11,6 +15,13 @@ let modifiedFeatures = [];
 let gizmoX = null;
 let gizmoY = null;
 let gizmoZ = null;
+let gizmoRotZ = null;   // ★追加：回転用ギズモ
+let currentHeading = 0; // ★追加：現在の回転角度（ラジアン）
+
+// ★追加：Google用Tileset等の管理変数
+let plateauTileset = null;
+let googleTileset = null;
+let isGoogleMode = false;
 
 const JAPAN_TERRAIN_ID = 2767062;
 const PLATEAU_BLDG_ID = 2602291;
@@ -26,7 +37,7 @@ const keys = { w: false, a: false, s: false, d: false, q: false, e: false };
  */
 export async function initCesium(containerId, token, location = KYOTO_STATION) {
     // ==========================================================
-    // ★修正：すでに viewer が存在する場合でも、カメラ位置だけは新しい場所に更新する
+    // ★すでに viewer が存在する場合でも、カメラ位置だけは新しい場所に更新する
     // ==========================================================
     if (viewer) {
         viewer.camera.setView({
@@ -79,10 +90,9 @@ export async function initCesium(containerId, token, location = KYOTO_STATION) {
     controller.inertiaZoom = 0.85;
 
     // 5. 見上げの許可と、接近距離の緩和
-    controller.minimumZoomDistance = 2;   // ★10m→2mに変更（建物のギリギリまで寄れるようにする）
-    // controller.maximumPitch = 0;       // ★削除（コメントアウト）して、空を見上げる操作を許可する
+    controller.minimumZoomDistance = 2;   // ★建物のギリギリまで寄れるようにする
 
-    // ★新規追加：カメラが地盤面（地形）の下に潜るのを強力に防ぐ安全装置
+    // ★カメラが地盤面（地形）の下に潜るのを強力に防ぐ安全装置
     viewer.scene.preRender.addEventListener(() => {
         const cameraCarto = viewer.camera.positionCartographic;
         // 現在のカメラの真下にある地形（Terrain）の標高を取得
@@ -100,8 +110,50 @@ export async function initCesium(containerId, token, location = KYOTO_STATION) {
 
     try {
         viewer.scene.setTerrain(new Cesium.Terrain(Cesium.CesiumTerrainProvider.fromIonAssetId(JAPAN_TERRAIN_ID)));
-        const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(PLATEAU_BLDG_ID);
-        viewer.scene.primitives.add(tileset);
+        
+        // ==========================================
+        // 1. 既存の PLATEAU 読み込み
+        // ==========================================
+        plateauTileset = await Cesium.Cesium3DTileset.fromIonAssetId(PLATEAU_BLDG_ID);
+        viewer.scene.primitives.add(plateauTileset);
+
+        // ==========================================
+        // 2. ★追加：Google Photorealistic 3D Tiles の読み込み
+        // ==========================================
+        googleTileset = await Cesium.createGooglePhotorealistic3DTileset();
+        viewer.scene.primitives.add(googleTileset);
+        
+        // 初期状態はPLATEAUを見せるため、Google側は非表示にしておく
+        googleTileset.show = false; 
+
+        // ==========================================
+        // 3. ★追加：切り替えボタンのイベント設定
+        // ==========================================
+        const toggleBtn = document.getElementById('btn-toggle-tiles');
+        if (toggleBtn) {
+            // イベントの多重登録を防ぐために一度古いイベントを消す（クローン置換）
+            const newBtn = toggleBtn.cloneNode(true);
+            toggleBtn.parentNode.replaceChild(newBtn, toggleBtn);
+
+            newBtn.addEventListener('click', () => {
+                isGoogleMode = !isGoogleMode;
+                
+                // 表示・非表示を切り替え
+                if (googleTileset) googleTileset.show = isGoogleMode;
+                if (plateauTileset) plateauTileset.show = !isGoogleMode;
+
+                // ボタンの見た目とテキストを更新
+                if (isGoogleMode) {
+                    newBtn.innerHTML = '🗺️ 背景切替: Google 3D (現在)';
+                    newBtn.style.background = '#4285F4';
+                    newBtn.style.color = 'white';
+                } else {
+                    newBtn.innerHTML = '🗺️ 背景切替: PLATEAU (現在)';
+                    newBtn.style.background = '#fff';
+                    newBtn.style.color = '#4285F4';
+                }
+            });
+        }
 
         // 2D地図で選んだ location にカメラを向ける
         viewer.camera.setView({
@@ -112,61 +164,74 @@ export async function initCesium(containerId, token, location = KYOTO_STATION) {
         setupKeyListeners();
         setupDragAndDrop();
         setupPegman();
-        setupTransparencyControl(); // ★ここに追加：透過機能の初期化
+        setupTransparencyControl();
     } catch (e) {
         console.error("Cesium初期化エラー:", e);
     }
 }
 
 /**
- * Three.jsから書き出されたGLBモデルをCesium上に配置する関数（フリーズ対策＆自動スナップ版）
+ * ★追加：モデルの現在位置に合わせて「正しい真上」を基準に回転を適用する関数
+ */
+function updateEntityOrientation(position) {
+    if (!targetEntity || !position) return;
+    const hpr = new Cesium.HeadingPitchRoll(currentHeading, 0, 0);
+    targetEntity.orientation = Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
+}
+
+/**
+ * Three.jsから書き出されたGLBモデルをCesium上に配置する関数
  */
 export function placeModelOnEarth(glbUrl, location = KYOTO_STATION) {
     if (!viewer) return;
 
     if (targetEntity) viewer.entities.remove(targetEntity);
-    removeGizmos(); // 既存のギズモがあれば削除
+    removeGizmos(); 
 
-    // 2D地図で選んだ location を使用する
+    currentHeading = 0; // ★新規配置時は回転をリセット
+
     const lonRad = Cesium.Math.toRadians(location.lng);
     const latRad = Cesium.Math.toRadians(location.lat);
     const originCarto = new Cesium.Cartographic(lonRad, latRad, 2000.0);
-
-    // 1. まずはエラーを回避するため、地形（Terrain）のおおよその高さに「仮配置」する
     let fallbackHeight = viewer.scene.globe.getHeight(originCarto) || 30.0;
+
+    const initialPos = Cesium.Cartesian3.fromRadians(lonRad, latRad, fallbackHeight);
 
     targetEntity = viewer.entities.add({
         name: 'Exported_Building',
-        position: Cesium.Cartesian3.fromRadians(lonRad, latRad, fallbackHeight),
+        position: initialPos,
         model: { 
             uri: glbUrl, 
-            scale: 0.001 // スケール修正（mm -> m）
+            scale: 0.001 
         }
     });
+    
+    updateEntityOrientation(initialPos); // ★回転の適用
 
-    createGizmos(); // ギズモの生成
+    createGizmos(); 
 
-    // 2. 画面の描画が追いつき、PLATEAUの建物が読み込まれた後（0.5秒後）にレーザーを撃つ
     setTimeout(() => {
         try {
             viewer.scene.render(); 
-            
             const origin = Cesium.Cartographic.toCartesian(originCarto);
             const normal = viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(origin);
             const direction = Cesium.Cartesian3.negate(normal, new Cesium.Cartesian3());
             const downRay = new Cesium.Ray(origin, direction);
-
             const earthPos = getTrueGroundPosition(downRay);
             
             if (Cesium.defined(earthPos)) {
                 const snapHeight = Cesium.Cartographic.fromCartesian(earthPos).height;
-                targetEntity.position = Cesium.Cartesian3.fromRadians(lonRad, latRad, snapHeight);
+                const snapPos = Cesium.Cartesian3.fromRadians(lonRad, latRad, snapHeight);
+                targetEntity.position = snapPos;
+                updateEntityOrientation(snapPos); // ★スナップ後も回転を適用
             }
         } catch (e) {
             console.warn("初期スナップに失敗しましたが、動作は継続します。", e);
         }
     }, 500);
 }
+
+
 
 /**
  * 3軸ギズモ（操作用ハンドル）の生成：完全透過ラベル付き版
@@ -279,6 +344,43 @@ function createGizmos() {
             style: Cesium.LabelStyle.FILL_AND_OUTLINE,
             pixelOffset: new Cesium.Cartesian2(0, -20),
             disableDepthTestDistance: Number.POSITIVE_INFINITY
+        }       
+    });
+gizmoRotZ = viewer.entities.add({
+        name: 'Gizmo_Rot_Z',
+        show: false,
+        position: new Cesium.CallbackProperty(() => {
+            if(!targetEntity) return Cesium.Cartesian3.ZERO;
+            const center = targetEntity.position.getValue(viewer.clock.currentTime);
+            const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+            const s = getScale(center) * 1.5;
+            return Cesium.Matrix4.multiplyByPoint(transform, new Cesium.Cartesian3(s, -s, 1), new Cesium.Cartesian3());
+        }, false),
+        polyline: {
+            positions: new Cesium.CallbackProperty(() => {
+                if(!targetEntity) return [];
+                const center = targetEntity.position.getValue(viewer.clock.currentTime);
+                const transform = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+                const s = getScale(center) * 1.5; // 円の半径
+                const pts = [];
+                for(let i=0; i<=36; i++) {
+                    const rad = Cesium.Math.toRadians(i * 10);
+                    pts.push(Cesium.Matrix4.multiplyByPoint(transform, new Cesium.Cartesian3(Math.cos(rad)*s, Math.sin(rad)*s, 1), new Cesium.Cartesian3()));
+                }
+                return pts;
+            }, false),
+            width: 15,
+            material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.2, color: Cesium.Color.YELLOW }),
+            clampToGround: false
+        },
+        label: {
+            text: '↻ 回転',
+            font: 'bold 16px sans-serif',
+            fillColor: Cesium.Color.WHITE,
+            outlineColor: Cesium.Color.YELLOW,
+            outlineWidth: 4,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
         }
     });
 }
@@ -287,7 +389,8 @@ function removeGizmos() {
     if (gizmoX) viewer.entities.remove(gizmoX);
     if (gizmoY) viewer.entities.remove(gizmoY);
     if (gizmoZ) viewer.entities.remove(gizmoZ);
-    gizmoX = gizmoY = gizmoZ = null;
+    if (gizmoRotZ) viewer.entities.remove(gizmoRotZ); // ★追加
+    gizmoX = gizmoY = gizmoZ = gizmoRotZ = null;      // ★変更
 }
 
 /**
@@ -295,7 +398,7 @@ function removeGizmos() {
  */
 function getTrueGroundPosition(ray) {
     const hits = viewer.scene.drillPickFromRay(ray, 10);
-    const ignoreIds = [targetEntity, gizmoX, gizmoY, gizmoZ];
+    const ignoreIds = [targetEntity, gizmoX, gizmoY, gizmoZ, gizmoRotZ];
 
     for (let i = 0; i < hits.length; i++) {
         if (hits[i].object && ignoreIds.includes(hits[i].object.id)) continue;
@@ -313,10 +416,11 @@ function setGizmoVisibility(visible) {
     if (gizmoX) gizmoX.show = visible;
     if (gizmoY) gizmoY.show = visible;
     if (gizmoZ) gizmoZ.show = visible;
+    if (gizmoRotZ) gizmoRotZ.show = visible; // ★追加
 }
 
 /**
- * マウスによるドラッグ＆ドロップ（ギズモ対応版）
+ * マウスによるドラッグ＆ドロップ（回転・ギズモ対応 ＆ スムーズ移動対応版）
  */
 function setupDragAndDrop() {
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
@@ -325,6 +429,11 @@ function setupDragAndDrop() {
     let isZDragging = false;
     let activeGizmo = null; 
     const elevationText = document.getElementById('elevationText');
+
+    // ★追加：ドラッグ開始時のオフセット（ズレ）を記憶するための変数
+    let dragStartMouseCartesian = null;
+    let dragStartEntityCartesian = null;
+    let dragStartEntityCartographic = null;
 
     handler.setInputAction((click) => {
         if (isTransparencyMode) return;
@@ -339,6 +448,7 @@ function setupDragAndDrop() {
             else if (picked.id === gizmoX) { dragging = true; activeGizmo = 'X'; }
             else if (picked.id === gizmoY) { dragging = true; activeGizmo = 'Y'; }
             else if (picked.id === gizmoZ) { dragging = true; activeGizmo = 'Z'; }
+            else if (picked.id === gizmoRotZ) { dragging = true; activeGizmo = 'ROT_Z'; } 
             else {
                 setGizmoVisibility(false);
             }
@@ -346,6 +456,23 @@ function setupDragAndDrop() {
             if (dragging) {
                 viewer.scene.screenSpaceCameraController.enableInputs = false;
                 document.body.style.cursor = 'grabbing';
+
+                // ★追加：ドラッグ開始時の建物の位置を記録
+                dragStartEntityCartesian = targetEntity.position.getValue(viewer.clock.currentTime).clone();
+                dragStartEntityCartographic = Cesium.Cartographic.fromCartesian(dragStartEntityCartesian);
+                
+                // ★追加：ドラッグ開始時のマウス位置（地球上の座標）を記録
+                const ray = viewer.camera.getPickRay(click.position);
+                if (activeGizmo === 'FREE') {
+                    dragStartMouseCartesian = getTrueGroundPosition(ray);
+                }
+                
+                // ギズモ操作時や、地面取得失敗時は仮想平面を利用する
+                if (!dragStartMouseCartesian) {
+                    const normal = viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(dragStartEntityCartesian);
+                    const plane = Cesium.Plane.fromPointNormal(dragStartEntityCartesian, normal);
+                    dragStartMouseCartesian = Cesium.IntersectionTests.rayPlane(ray, plane);
+                }
             }
         } else {
             setGizmoVisibility(false);
@@ -358,12 +485,26 @@ function setupDragAndDrop() {
         const currentCartesian = targetEntity.position.getValue(viewer.clock.currentTime);
         const currentCartographic = Cesium.Cartographic.fromCartesian(currentCartesian);
 
+        if (activeGizmo === 'ROT_Z') {
+            const deltaX = move.endPosition.x - move.startPosition.x;
+            currentHeading -= deltaX * 0.02; // 感度調整
+            updateEntityOrientation(currentCartesian);
+            
+            if (elevationText) {
+                let deg = Cesium.Math.toDegrees(currentHeading) % 360;
+                if (deg < 0) deg += 360;
+                elevationText.innerHTML = `[回転] 角度: ${deg.toFixed(1)}°`;
+                elevationText.className = "snap-active";
+            }
+            return;
+        }
+
         const isXLocked = keys.a || keys.d || activeGizmo === 'X';
         const isYLocked = keys.w || keys.s || activeGizmo === 'Y';
         const isZLocked = keys.q || keys.e || activeGizmo === 'Z';
 
         if (isXLocked || isYLocked || isZLocked) {
-            // 【Z軸】
+            // 【Z軸】（Z軸は画面ピクセルベースでの相対移動なのでそのまま）
             if (isZLocked) {
                 if (!isZDragging) {
                     isZDragging = true;
@@ -395,7 +536,9 @@ function setupDragAndDrop() {
                     isSnapped = true;
                 }
 
-                targetEntity.position = Cesium.Cartesian3.fromRadians(currentCartographic.longitude, currentCartographic.latitude, appliedHeight);
+                const newPos = Cesium.Cartesian3.fromRadians(currentCartographic.longitude, currentCartographic.latitude, appliedHeight);
+                targetEntity.position = newPos;
+                updateEntityOrientation(newPos);
                 
                 if (elevationText) {
                     elevationText.innerHTML = isSnapped ? `[Z軸] 📌 地盤面にスナップ中 (高度: 約 ${appliedHeight.toFixed(2)} m)` : `[Z軸] ☁️ 浮遊中 (高度: 約 ${appliedHeight.toFixed(2)} m)`;
@@ -408,14 +551,18 @@ function setupDragAndDrop() {
 
             // 【X軸/Y軸】
             const ray = viewer.camera.getPickRay(move.endPosition);
-            const normal = viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(currentCartesian);
-            const plane = Cesium.Plane.fromPointNormal(currentCartesian, normal);
-            const targetCartesian = Cesium.IntersectionTests.rayPlane(ray, plane);
+            const normal = viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(dragStartEntityCartesian);
+            const plane = Cesium.Plane.fromPointNormal(dragStartEntityCartesian, normal);
+            const currentMouseCartesian = Cesium.IntersectionTests.rayPlane(ray, plane);
 
-            if (targetCartesian) {
-                const targetCartographic = Cesium.Cartographic.fromCartesian(targetCartesian);
-                let newLon = currentCartographic.longitude;
-                let newLat = currentCartographic.latitude;
+            // ★変更：オフセットを考慮した移動先の計算
+            if (currentMouseCartesian && dragStartMouseCartesian) {
+                const offset = Cesium.Cartesian3.subtract(currentMouseCartesian, dragStartMouseCartesian, new Cesium.Cartesian3());
+                const targetPos = Cesium.Cartesian3.add(dragStartEntityCartesian, offset, new Cesium.Cartesian3());
+                const targetCartographic = Cesium.Cartographic.fromCartesian(targetPos);
+                
+                let newLon = dragStartEntityCartographic.longitude;
+                let newLat = dragStartEntityCartographic.latitude;
 
                 if (isXLocked) {
                     newLon = targetCartographic.longitude;
@@ -426,7 +573,9 @@ function setupDragAndDrop() {
                 }
                 
                 if (elevationText) elevationText.className = "";
-                targetEntity.position = Cesium.Cartesian3.fromRadians(newLon, newLat, currentCartographic.height);
+                const newPos = Cesium.Cartesian3.fromRadians(newLon, newLat, currentCartographic.height);
+                targetEntity.position = newPos;
+                updateEntityOrientation(newPos);
             }
         } 
         // 【フリー移動】
@@ -435,11 +584,25 @@ function setupDragAndDrop() {
             const ray = viewer.camera.getPickRay(move.endPosition);
             const earthPosition = getTrueGroundPosition(ray);
 
-            if (Cesium.defined(earthPosition)) {
-                targetEntity.position = earthPosition;
-                const carto = Cesium.Cartographic.fromCartesian(earthPosition);
+            // ★変更：フリー移動時もオフセットを考慮
+            if (Cesium.defined(earthPosition) && dragStartMouseCartesian) {
+                const currentMouseCarto = Cesium.Cartographic.fromCartesian(earthPosition);
+                const startMouseCarto = Cesium.Cartographic.fromCartesian(dragStartMouseCartesian);
+                
+                // 経緯度の差分を計算
+                const dLon = currentMouseCarto.longitude - startMouseCarto.longitude;
+                const dLat = currentMouseCarto.latitude - startMouseCarto.latitude;
+                
+                // 元の建物の位置に差分を足す
+                const newLon = dragStartEntityCartographic.longitude + dLon;
+                const newLat = dragStartEntityCartographic.latitude + dLat;
+
+                const newPos = Cesium.Cartesian3.fromRadians(newLon, newLat, currentMouseCarto.height);
+                targetEntity.position = newPos;
+                updateEntityOrientation(newPos); 
+                
                 if (elevationText) {
-                    elevationText.innerHTML = `フリー移動: 高度 約 ${carto.height.toFixed(2)} m`;
+                    elevationText.innerHTML = `フリー移動: 高度 約 ${currentMouseCarto.height.toFixed(2)} m`;
                     elevationText.className = "";
                 }
             }
@@ -451,41 +614,30 @@ function setupDragAndDrop() {
             dragging = false;
             isZDragging = false;
             activeGizmo = null;
+            
+            // ★追加：変数クリア
+            dragStartMouseCartesian = null;
+            dragStartEntityCartesian = null;
+            dragStartEntityCartographic = null;
+            
             viewer.scene.screenSpaceCameraController.enableInputs = true;
-            // ==========================================================
-            // ★新規追記：ドラッグ終了時の最新座標を2D地図（index.html側）に同期する
-            // ==========================================================
+            
             if (targetEntity) {
                 const currentCartesian = targetEntity.position.getValue(viewer.clock.currentTime);
                 if (Cesium.defined(currentCartesian)) {
                     const carto = Cesium.Cartographic.fromCartesian(currentCartesian);
-                    
-                    // ラジアンから度数法（普段使う緯度経度）に変換
                     const latestLng = Cesium.Math.toDegrees(carto.longitude);
                     const latestLat = Cesium.Math.toDegrees(carto.latitude);
 
-                    // index.html側にある「lastPlacedLocation」がグローバルに存在すれば上書き
                     if (typeof window.lastPlacedLocation !== 'undefined') {
-                        window.lastPlacedLocation = {
-                            lat: latestLat,
-                            lng: latestLng
-                        };
-                        console.log(`[同期完了] 3Dドラッグ位置を2D地図に反映しました: ${latestLat}, ${latestLng}`);
+                        window.lastPlacedLocation = { lat: latestLat, lng: latestLng };
                     }
                 }
             }
-            // ==========================================================
-
-            // 地面に自動再スナップさせる
             manualSnapToGround();
         }
     }, Cesium.ScreenSpaceEventType.LEFT_UP);
 }
-
-// =========================================================================
-// ここから下は独立した関数
-// =========================================================================
-
 /**
  * 手動で現在位置の真下にスナップし直す関数
  */
@@ -513,11 +665,13 @@ export function manualSnapToGround() {
         snapHeight = viewer.scene.globe.getHeight(originCarto) || 0;
     }
 
-    targetEntity.position = Cesium.Cartesian3.fromRadians(lonRad, latRad, snapHeight);
+    const newPos = Cesium.Cartesian3.fromRadians(lonRad, latRad, snapHeight);
+    targetEntity.position = newPos;
+    updateEntityOrientation(newPos); // ★更新
     
     const elevationText = document.getElementById('elevationText');
     if (elevationText) {
-        elevationText.innerHTML = `[Z軸] 📌 再スナップ完了 (高度: 約 ${snapHeight.toFixed(2)} m)`;
+        elevationText.innerHTML = `📌 配置完了 (高度: 約 ${snapHeight.toFixed(2)} m)`;
         elevationText.className = "snap-active";
     }
 }
