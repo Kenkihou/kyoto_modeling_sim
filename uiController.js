@@ -90,7 +90,46 @@ export const UIController = {
             } else if (type === '寄棟') {
                 currentGUI.add(params, 'eaves', 0, 2000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
-            } else if (type === 'パラペット修景') {
+            } 
+            
+            // ★追加：切り欠きのGUI設定（切妻・寄棟 共通）
+            if (type === '切妻' || type === '寄棟') {
+                if (!params.cutout) params.cutout = { active: false, x: 0, z: 0, w: 1000, d: 1000 };
+                const cutoutFolder = currentGUI.addFolder('屋根の切り欠き (中庭/室外機置場)');
+                cutoutFolder.add(params.cutout, 'active').name('切り欠きを有効化').onChange(() => {
+                    onChange(); this.updateGUI(b, 'roof'); // GUIを再描画して項目を表示
+                }).onFinishChange(onFinishChange);
+                
+                if (params.cutout.active) {
+                    // ★追加：建物を縮小した場合など、現在の値が枠外にはみ出ている場合は安全な値に押し戻す（初期クランプ）
+                    if (params.cutout.x > b.w - 100) params.cutout.x = Math.max(0, b.w - 100);
+                    if (params.cutout.z > b.d - 100) params.cutout.z = Math.max(0, b.d - 100);
+                    if (params.cutout.w > b.w - params.cutout.x) params.cutout.w = Math.max(100, b.w - params.cutout.x);
+                    if (params.cutout.d > b.d - params.cutout.z) params.cutout.d = Math.max(100, b.d - params.cutout.z);
+
+                    // ★修正：スライダー生成時に、互いの値を考慮した「最大値」を設定する
+                    const wCtrl = cutoutFolder.add(params.cutout, 'w', 100, Math.max(100, b.w - params.cutout.x), 100).name('幅 W (mm)');
+                    const dCtrl = cutoutFolder.add(params.cutout, 'd', 100, Math.max(100, b.d - params.cutout.z), 100).name('奥行 D (mm)');
+                    const xCtrl = cutoutFolder.add(params.cutout, 'x', 0, Math.max(0, b.w - params.cutout.w), 100).name('位置 X (mm)');
+                    const zCtrl = cutoutFolder.add(params.cutout, 'z', 0, Math.max(0, b.d - params.cutout.d), 100).name('位置 Z (mm)');
+
+                    // ★追加：スライダーを動かすたびに、他のスライダーの「最大限界値」をリアルタイムに更新する
+                    const updateCutoutLimits = () => {
+                        wCtrl.max(Math.max(100, b.w - params.cutout.x));
+                        dCtrl.max(Math.max(100, b.d - params.cutout.z));
+                        xCtrl.max(Math.max(0, b.w - params.cutout.w));
+                        zCtrl.max(Math.max(0, b.d - params.cutout.d));
+                        onChange();
+                    };
+
+                    wCtrl.onChange(updateCutoutLimits).onFinishChange(onFinishChange);
+                    dCtrl.onChange(updateCutoutLimits).onFinishChange(onFinishChange);
+                    xCtrl.onChange(updateCutoutLimits).onFinishChange(onFinishChange);
+                    zCtrl.onChange(updateCutoutLimits).onFinishChange(onFinishChange);
+                }
+            }
+
+            if (type === 'パラペット修景') {
                 currentGUI.add(params, 'pHeight', 150, 1000, 50).name('パラペット高さ (mm)').onChange(onChange).onFinishChange(onFinishChange);
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('笠木勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
                 currentGUI.add(params, 'out_px', 0, 2000, 100).name('外方向の出幅 (mm)').onChange(onChange).onFinishChange(onFinishChange);
@@ -256,6 +295,70 @@ export const UIController = {
             const resetObj = { reset: () => { b.doorParams[faceDir] = { offsetX: 0 }; onFinishChange(); rebuildMeshes(); this.updateGUI(b, 'door', faceDir); }};
             currentGUI.add(resetObj, 'reset').name('↺ デフォルトに戻す');
         }
+        else if (targetType === 'size') {
+            currentGUI = new GUI({ title: `基本寸法の手入力` });
+            currentGUI.domElement.style.position = 'absolute';
+            currentGUI.domElement.style.top = '10px'; 
+            currentGUI.domElement.style.right = '10px';
+
+            const minX = b.x - b.w / 2;
+            const minZ = b.z - b.d / 2;
+
+            const sizeParams = { width: b.w, depth: b.d, height: b.h, step: 100 };
+
+            const onChangeSize = () => {
+                // 連動計算のために、サイズ変更前の「元の高さ」を一時的に記憶しておく
+                const oldH = b.h;
+
+                // ★修正のキモ：高さ(b.h)を書き換える【前】に、上に積まれているブロックを探しておく
+                const stackedBlocks = AppState.getStackedBlocks([b]);
+
+                // 新しい寸法を適用
+                b.w = sizeParams.width;
+                b.d = sizeParams.depth;
+                b.h = sizeParams.height;
+
+                // 記憶した基準点（隅）を保ったまま、新しい「中心座標」を再計算して移動させる
+                b.x = minX + b.w / 2;
+                b.z = minZ + b.d / 2;
+
+                // 真上に積まれている他のブロックのY座標（高さ位置）を連動させる
+                const deltaH = b.h - oldH; 
+                if (Math.abs(deltaH) > 0.1) {
+                    stackedBlocks.forEach(ob => {
+                        // 自分自身（ベースとなった下の階）は除外し、上に乗っている階のベースY座標を差分だけ持ち上げる
+                        if (ob.id !== b.id) {
+                            ob.y = (ob.y || 0) + deltaH;
+                        }
+                    });
+                }
+
+                AppState.updateAllLowerRoofs(); 
+                rebuildMeshes();
+            };
+
+            // ★修正：最小値(min)をハードコードせず、stepに依存させる
+            const wCtrl = currentGUI.add(sizeParams, 'width').min(sizeParams.step).max(20000).step(sizeParams.step).name('間口 W (mm)').onChange(onChangeSize).onFinishChange(onFinishChange);
+            const dCtrl = currentGUI.add(sizeParams, 'depth').min(sizeParams.step).max(20000).step(sizeParams.step).name('奥行 D (mm)').onChange(onChangeSize).onFinishChange(onFinishChange);
+            
+            let hCtrl = null;
+            if (b.h > 100) {
+                hCtrl = currentGUI.add(sizeParams, 'height').min(sizeParams.step).max(20000).step(sizeParams.step).name('高さ H (mm)').onChange(onChangeSize).onFinishChange(onFinishChange);
+            }
+
+            // ★修正：スナップ幅を変更する際、スライダーの最小値も同時に書き換える
+            currentGUI.add(sizeParams, 'step', { '100mm': 100, '50mm': 50, '10mm': 10 }).name('スナップ幅').onChange(val => {
+                wCtrl.min(val).step(val);
+                dCtrl.min(val).step(val);
+                if (hCtrl) hCtrl.min(val).step(val);
+                
+                // 表示のズレを防ぐため、UIを強制アップデート
+                wCtrl.updateDisplay();
+                dCtrl.updateDisplay();
+                if (hCtrl) hCtrl.updateDisplay();
+            });
+        }
+
     },
 
     showFloatingMenu(x, y, block, faceType, faceDir) {
@@ -388,6 +491,7 @@ export const UIController = {
             AppState.saveState();
             AppState.updateAllLowerRoofs(); 
             rebuildMeshes();
+            if (window.triggerHighlightSync) window.triggerHighlightSync();
             this.updateActionButtons();
         };
 

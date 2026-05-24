@@ -188,7 +188,8 @@ export function placeModelOnEarth(glbUrl, location = KYOTO_STATION) {
     if (targetEntity) viewer.entities.remove(targetEntity);
     removeGizmos(); 
 
-    currentHeading = 0; // ★新規配置時は回転をリセット
+    // ★修正：前回の回転角度が退避されていればそれを引き継ぎ、なければ0にする
+    currentHeading = window.lastPlacedHeading || 0;
 
     const lonRad = Cesium.Math.toRadians(location.lng);
     const latRad = Cesium.Math.toRadians(location.lat);
@@ -632,6 +633,8 @@ function setupDragAndDrop() {
                     if (typeof window.lastPlacedLocation !== 'undefined') {
                         window.lastPlacedLocation = { lat: latestLat, lng: latestLng };
                     }
+                    // ★追加：ギズモ操作で変更された最新の回転角度をグローバルに記憶する
+                    window.lastPlacedHeading = currentHeading;
                 }
             }
             manualSnapToGround();

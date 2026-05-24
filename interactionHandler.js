@@ -29,6 +29,29 @@ const tooltip = document.getElementById('tooltip');
 
 let currentSnap = 500; // 現在のスナップ量
 function snap(val) { return Math.round(val / currentSnap) * currentSnap; }
+// ==========================================
+// ★変更：ダブルクリック＆トリプルクリック編集モード用変数
+// ==========================================
+let isEditing = false; 
+let isGroupEditing = false; // ★追加：建物全体移動モードかどうかのフラグ
+let editingBlock = null; 
+let editingGroupBlocks = []; // ★追加：一緒に動かす建物パーツのリスト
+let isDraggingBlock = false; 
+const dragStartMouse = new THREE.Vector3(); 
+const dragStartBlockPos = new THREE.Vector3();
+let moveGizmo = null; 
+// ==========================================
+// ★追加：編集ハイライト用の青色マテリアル（使い回し用）
+// ==========================================
+const editBlueMat = new THREE.MeshBasicMaterial({ 
+    color: 0xcceeff, 
+    polygonOffset: true, 
+    polygonOffsetFactor: 1, 
+    polygonOffsetUnits: 1, 
+    side: THREE.DoubleSide 
+});
+// ==========================================
+
 
 function getMainPointer(e) {
     const subW = (window.innerHeight / 4) * 1.5;
@@ -82,27 +105,155 @@ function updateHoverMesh(b, normal) {
     hoverMesh.visible = true;
 }
 
+// ==========================================
+// ★追加：ギズモの作成・更新・削除関数
+// ==========================================
+function createGizmo() {
+    if (moveGizmo) return;
+
+    moveGizmo = new THREE.Group();
+
+    const axisLength = 3000;
+    const arrowLength = 500;
+    const arrowWidth = 200;
+
+    // X軸 (赤)
+    const dirX = new THREE.Vector3(1, 0, 0);
+    const origin = new THREE.Vector3(0, 0, 0);
+    const arrowHelperX1 = new THREE.ArrowHelper(dirX, origin, axisLength, 0xff0000, arrowLength, arrowWidth);
+    
+    // Z軸 (青)
+    const dirZ = new THREE.Vector3(0, 0, 1);
+    const arrowHelperZ1 = new THREE.ArrowHelper(dirZ, origin, axisLength, 0x0000ff, arrowLength, arrowWidth);
+
+    [arrowHelperX1, arrowHelperZ1].forEach(arrow => { // ★X2とZ2を削除
+        arrow.line.material.depthTest = false;
+        arrow.line.material.depthWrite = false;
+        arrow.line.material.linewidth = 3;
+        arrow.cone.material.depthTest = false;
+        arrow.cone.material.depthWrite = false;
+    });
+
+    moveGizmo.add(arrowHelperX1, arrowHelperZ1);
+    moveGizmo.position.y = 50; // 地面に埋もれないように少し浮かせる
+    moveGizmo.visible = false; // ★追加：初期状態では非表示にする
+    scene.add(moveGizmo);
+}
+
+function updateGizmo() {
+    if (isEditing && editingBlock && moveGizmo) {
+        moveGizmo.position.x = editingBlock.x;
+        moveGizmo.position.z = editingBlock.z;
+        
+        // カメラ距離に応じて大きさを一定に保つ
+        const dist = camera.position.distanceTo(moveGizmo.position);
+        const scale = Math.max(0.5, dist / 15000);
+        moveGizmo.scale.set(scale, scale, scale);
+        
+        moveGizmo.visible = true;
+    } else if (moveGizmo) {
+        moveGizmo.visible = false;
+    }
+}
+
+function removeGizmo() {
+    if (moveGizmo) moveGizmo.visible = false;
+}
+
+// 【重要】現在のアクティブなIDを判定する関数を追加
+function isBlockHighlighted(blockId) {
+    if (!isEditing) return false;
+    return isGroupEditing 
+        ? editingGroupBlocks.some(b => b.id === blockId)
+        : (editingBlock && editingBlock.id === blockId);
+}
+
+// ==========================================
+// ★差し替え：編集中のオブジェクトを青くハイライトする関数
+// ==========================================
+function highlightEditingBlocks() {
+    if (!scene) return;
+    const houseGroup = window.getHouseGroup?.() || scene;
+    
+    // 現在のハイライト対象IDリストを作成
+    let targetIds = [];
+    if (isEditing && editingBlock) {
+        targetIds = isGroupEditing ? editingGroupBlocks.map(b => b.id) : [editingBlock.id];
+    }
+    
+    houseGroup.traverse((child) => {
+        // メッシュであり、IDを持っているものだけを対象とする
+        if (!child.isMesh || !child.userData || !child.userData.id) return;
+        
+        const isTarget = targetIds.includes(child.userData.id);
+        
+        if (isTarget) {
+            // 【ターゲットの場合：使い回し用の青マテリアルを直接適用する】
+            if (Array.isArray(child.material)) {
+                child.material = [editBlueMat, editBlueMat, editBlueMat, editBlueMat, editBlueMat, editBlueMat];
+            } else {
+                child.material = editBlueMat;
+            }
+        }
+        // ※ターゲット以外の場合は、再構築時に元の色が自動的に割り当てられているため何もしなくてOKです
+    });
+
+    // ★ココが最重要！ 色を塗り替えた後に強制的に画面を再描画する
+    if (window.renderAllViews) {
+        window.renderAllViews();
+    }
+}
+window.triggerHighlightSync = highlightEditingBlocks;
+
+// 編集モードを完全に終了する共通関数
+function exitEditMode() {
+    isEditing = false;
+    isGroupEditing = false;
+    editingBlock = null;
+    editingGroupBlocks = [];
+    isDraggingBlock = false;
+    
+    removeGizmo();
+    rebuildMeshes(); // ★再構築を呼ぶだけで、自動的に元の色に戻ります
+    document.body.style.cursor = 'default';
+}
+
 export const InteractionHandler = {
-    init(params) {
+toggleSnap() {
+        // 500と100を切り替える
+        currentSnap = currentSnap === 500 ? 100 : 500;
+        
+        // HTMLのUI表示を更新する
+        const btn = document.getElementById('btn-snap-toggle');
+        const span = document.getElementById('snap-val');
+        if (btn) btn.setAttribute('data-tooltip', `📏 スナップ: ${currentSnap}mm`);
+        if (span) span.innerText = currentSnap;
+        
+        return currentSnap;
+    },    
+// init(params) の末尾までを以下に置き換え
+init(params) {
         camera = params.camera;
         scene = params.scene;
         controls = params.controls;
         getInteractiveMeshes = params.getInteractiveMeshes;
         hoverMesh = params.hoverMesh;
         activeMat = params.activeMat;
-        rebuildMeshes = params.rebuildMeshes;
-        saveState = params.saveState;
-
-        this.setupEventListeners();
         
-        // HTMLツールバーボタンから呼べるようグローバル化
-        window.setTool = (toolName) => this.setTool(toolName);
-        // スナップ切り替え関数
-        window.toggleSnap = () => {
-            currentSnap = currentSnap === 500 ? 100 : 500;
-            const btn = document.getElementById('btn-snap-toggle');
-            if (btn) btn.innerText = `📏 スナップ: ${currentSnap}mm`;
+        // ★修正：再構築の直後に、必ず色を塗る処理を連動させる
+        const originalRebuildMeshes = params.rebuildMeshes;
+        rebuildMeshes = () => {
+            originalRebuildMeshes();
+            highlightEditingBlocks();
         };
+        
+        saveState = params.saveState;
+        
+        createGizmo();
+        this.setupEventListeners();
+
+        // 外部からツールを切り替える用
+        window.setTool = (toolName) => this.setTool(toolName);
     },
 
     getCurrentTool() {
@@ -111,6 +262,10 @@ export const InteractionHandler = {
 
     setTool(toolName) {
         currentTool = toolName;
+        // ★追加：別のツールが選ばれたら編集・移動モードを解除
+        if (isEditing) {
+            exitEditMode(); // これ一行にまとめます
+        }
 
         // ★追加：ツールを切り替えた時に、作図中の仮平面があれば強制的に消去する
         if (currentDrawObj) {
@@ -157,6 +312,46 @@ export const InteractionHandler = {
             pointer.x = p.x;
             pointer.y = p.y;
             raycaster.setFromCamera(pointer, camera);
+
+            // ==========================================
+            // ★追加：編集モード時のブロックドラッグ開始
+            // ==========================================
+            if (isEditing && editingBlock && currentTool === null) {
+                const houseGroup = window.getHouseGroup?.() || scene;
+                const intersects = raycaster.intersectObject(houseGroup, true);
+                if (intersects.length > 0) {
+                    const hit = intersects[0];
+                    const hitId = hit.object.userData.id;
+                    
+                    // ★追加：グループ移動中なら「グループ内のどれか」をクリックしていればOKとする
+                    const isTargetHit = isGroupEditing 
+                        ? editingGroupBlocks.some(b => b.id === hitId)
+                        : hitId === editingBlock.id;
+
+                    if (isTargetHit) {
+                        const pt = getGroundIntersect(e);
+                        if (pt) {
+                            isDraggingBlock = true;
+                            dragStartMouse.copy(pt);
+                            dragStartBlockPos.set(editingBlock.x, 0, editingBlock.z);
+                            
+                            // ★追加：グループ全体の移動開始時の座標を記憶する
+                            if (isGroupEditing) {
+                                editingGroupBlocks.forEach(b => {
+                                    b.startX = b.x;
+                                    b.startZ = b.z;
+                                });
+                            }
+                            controls.enabled = false; 
+                            return; 
+                        }
+                    } else {
+                        exitEditMode();
+                    }
+                } else {
+                    exitEditMode(); // これ一行にまとめます
+                }
+            }
 
             if (currentTool === 'DRAW') {
                 const pt = getGroundIntersect(e);
@@ -216,8 +411,10 @@ export const InteractionHandler = {
                     if (extrudeNormal.y > 0) {
                         if (e.shiftKey) {
                             const newY = (baseBlock.y || 0) + baseBlock.h;
+                            const newId = Date.now().toString();
                             const newBlock = {
-                                id: Date.now().toString(),
+                                id: newId, // ★変更
+                                rootBuildingId: baseBlock.rootBuildingId || baseBlock.id,
                                 x: baseBlock.x, y: newY, z: baseBlock.z,
                                 w: baseBlock.w, d: baseBlock.d, h: 500 
                             };
@@ -244,8 +441,10 @@ export const InteractionHandler = {
                     } 
                     else {
                         if (e.shiftKey) {
+                            const newId = Date.now().toString();
                             const newBlock = {
-                                id: Date.now().toString(),
+                                id: newId, // ★変更
+                                rootBuildingId: baseBlock.rootBuildingId || baseBlock.id, // ★追加：親のルーツを受け継ぐ
                                 x: baseBlock.x, y: baseBlock.y || 0, z: baseBlock.z,
                                 w: baseBlock.w, d: baseBlock.d, h: baseBlock.h 
                             };
@@ -314,6 +513,109 @@ export const InteractionHandler = {
             }
             pointer.x = p.x;
             pointer.y = p.y;
+
+            updateGizmo(); // ★追加：ギズモの表示位置を更新
+
+            // ==========================================
+            // ★追加：編集モード時のカーソル変更 (ホバー判定)
+            // ==========================================
+            if (isEditing && editingBlock && currentTool === null && !isDraggingBlock) {
+                raycaster.setFromCamera(pointer, camera);
+                const houseGroup = window.getHouseGroup?.() || scene;
+                const intersects = raycaster.intersectObject(houseGroup, true);
+                
+                let isHoveringEditingBlock = false;
+                if (intersects.length > 0) {
+                    const hitId = intersects[0].object.userData.id;
+                    // ★グループ編集時は、グループ内のどのブロックに乗っても十字カーソルにする
+                    if (isGroupEditing) {
+                        if (editingGroupBlocks.some(b => b.id === hitId)) isHoveringEditingBlock = true;
+                    } else {
+                        if (hitId === editingBlock.id) isHoveringEditingBlock = true;
+                    }
+                }
+                
+                document.body.style.cursor = isHoveringEditingBlock ? 'move' : 'default';
+            }
+
+            // ==========================================
+            // ★追加：ドラッグ移動 ＆ 頂点マグネットスナップ
+            // ==========================================
+            if (isDraggingBlock && editingBlock) {
+                document.body.style.cursor = 'move'; 
+                
+                const pt = getGroundIntersect(e);
+                if (!pt) return;
+
+                const deltaX = pt.x - dragStartMouse.x;
+                const deltaZ = pt.z - dragStartMouse.z;
+                
+                let newX = dragStartBlockPos.x + deltaX;
+                let newZ = dragStartBlockPos.z + deltaZ;
+
+                const SNAP_DIST = 200; 
+                let snapedX = newX;
+                let snapedZ = newZ;
+                let minSqDist = SNAP_DIST * SNAP_DIST;
+
+                const w2 = editingBlock.w / 2;
+                const d2 = editingBlock.d / 2;
+                const myCorners = [
+                    { x: -w2, z: -d2 }, { x: w2, z: -d2 },
+                    { x: -w2, z: d2 }, { x: w2, z: d2 }
+                ];
+
+                for (let ob of AppState.buildingData) {
+                    // ★追加：全体移動時は、同じ家（グループ内）のブロック同士のマグネット干渉を無視する
+                    if (isGroupEditing && editingGroupBlocks.some(gb => gb.id === ob.id)) continue;
+                    if (!isGroupEditing && ob.id === editingBlock.id) continue;
+                    
+                    const obW2 = ob.w / 2;
+                    const obD2 = ob.d / 2;
+                    const obCorners = [
+                        { x: ob.x - obW2, z: ob.z - obD2 },
+                        { x: ob.x + obW2, z: ob.z - obD2 },
+                        { x: ob.x - obW2, z: ob.z + obD2 },
+                        { x: ob.x + obW2, z: ob.z + obD2 }
+                    ];
+
+                    for (let myC of myCorners) {
+                        const myWorldX = newX + myC.x;
+                        const myWorldZ = newZ + myC.z;
+
+                        for (let obC of obCorners) {
+                            const dx = obC.x - myWorldX;
+                            const dz = obC.z - myWorldZ;
+                            const sqDist = dx * dx + dz * dz;
+
+                            if (sqDist < minSqDist) {
+                                minSqDist = sqDist;
+                                snapedX = newX + dx;
+                                snapedZ = newZ + dz;
+                            }
+                        }
+                    }
+                }
+
+                // ★追加：実際の移動量に基づいて全体を動かす
+                const actualMoveX = snapedX - dragStartBlockPos.x;
+                const actualMoveZ = snapedZ - dragStartBlockPos.z;
+
+                if (isGroupEditing) {
+                    editingGroupBlocks.forEach(b => {
+                        b.x = b.startX + actualMoveX;
+                        b.z = b.startZ + actualMoveZ;
+                    });
+                } else {
+                    editingBlock.x = snapedX;
+                    editingBlock.z = snapedZ;
+                }
+                
+                updateGizmo(); 
+                AppState.updateAllLowerRoofs();
+                rebuildMeshes();
+                return;
+            }
 
             if (isDrawing) {
                 const pt = getGroundIntersect(e);
@@ -532,6 +834,10 @@ export const InteractionHandler = {
                 rebuildMeshes();
                 UIController.hideFloatingMenu();    
                 UIController.updateStatusDisplay(currentTool); 
+                hoverMesh.visible = false;
+
+                exitEditMode();
+                UIController.clearGUI();
             }
         });
 
@@ -547,7 +853,19 @@ export const InteractionHandler = {
             if (document.getElementById('cesium-overlay').style.display === 'block') return;
 
             const upPointer = new THREE.Vector2(e.clientX, e.clientY);
-            const isClick = downPointer.distanceTo(upPointer) < 5; 
+            const isClick = downPointer.distanceTo(upPointer) < 5;
+            
+            // ==========================================
+            // ★追加：ドラッグ移動の終了と履歴保存
+            // ==========================================
+            if (isDraggingBlock) {
+                isDraggingBlock = false;
+                controls.enabled = true;
+                if (!isClick) {
+                    saveState(); // 位置を確定して履歴（戻るボタン）に保存
+                    return; // ドラッグした場合はここで終了
+                }
+            }
 
             if (isClick && e.target.tagName === 'CANVAS') {
                 if (currentTool === null) {
@@ -661,8 +979,10 @@ export const InteractionHandler = {
                 if (tooltip) tooltip.style.display = 'none'; 
                 
                 if (currentDrawObj && currentDrawObj.w > 0 && currentDrawObj.d > 0) {
+                    const newId = Date.now().toString();
                     AppState.buildingData.push({
-                        id: Date.now().toString(),
+                        id: newId,
+                        rootBuildingId: newId,
                         x: currentDrawObj.x,
                         y: 0, 
                         z: currentDrawObj.z,
@@ -710,5 +1030,128 @@ export const InteractionHandler = {
                 }
             }
         });
-    }
+
+        // =========================================
+        // ★前回のダブルクリック処理を更新（フラグ追加）
+        // =========================================
+        window.addEventListener('dblclick', (e) => {
+            if (document.getElementById('cesium-overlay').style.display === 'block') return;
+            if (e.target.tagName !== 'CANVAS') return;
+
+            const p = getMainPointer(e);
+            if (!p) return;
+            pointer.x = p.x;
+            pointer.y = p.y;
+            raycaster.setFromCamera(pointer, camera);
+            
+            const houseGroup = window.getHouseGroup?.() || scene;
+            const intersects = raycaster.intersectObject(houseGroup, true);
+
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                const hitId = hit.object.userData.id;
+                
+                if (hit.object.userData.isDeco || hit.object.userData.isRoof) return;
+
+                const targetBlock = AppState.buildingData.find(d => d.id === hitId);
+                
+                if (targetBlock) {
+                    this.setTool(null);
+                    AppState.selectedId = hitId;
+                    AppState.selectedFaceDir = null;
+                    
+                    UIController.hideFloatingMenu();
+                    UIController.updateGUI(targetBlock, 'size');
+                    
+                    // ★ココが追加分：編集モードに移行
+                    isEditing = true;
+                    isGroupEditing = false;
+                    editingBlock = targetBlock;
+                    editingGroupBlocks = [];
+                    updateGizmo(); // ★追加：ダブルクリックでモードに入ったらギズモを表示
+                    rebuildMeshes();
+                    UIController.updateStatusDisplay(currentTool);
+                }
+            } else {
+                // 何もない場所をダブルクリックしたら編集解除
+                isEditing = false;
+                editingBlock = null;
+                removeGizmo(); // ★追加：編集が解除されたらギズモも消す
+            }
+        });
+
+        // =========================================
+        // ★新規追加：トリプルクリック処理（建物全体の選択・移動）
+        // =========================================
+        window.addEventListener('click', (e) => {
+            // e.detail に連続クリック回数が入っています
+            if (e.detail === 3) {
+                if (document.getElementById('cesium-overlay').style.display === 'block') return;
+                if (e.target.tagName !== 'CANVAS') return;
+
+                const p = getMainPointer(e);
+                if (!p) return;
+                pointer.x = p.x;
+                pointer.y = p.y;
+                raycaster.setFromCamera(pointer, camera);
+                
+                const houseGroup = window.getHouseGroup?.() || scene;
+                const intersects = raycaster.intersectObject(houseGroup, true);
+
+                if (intersects.length > 0) {
+                    const hit = intersects[0];
+                    const hitId = hit.object.userData.id;
+                    
+                    if (hit.object.userData.isDeco || hit.object.userData.isRoof) return;
+
+                    const targetBlock = AppState.buildingData.find(d => d.id === hitId);
+                    
+                    if (targetBlock) {
+                        this.setTool(null);
+                        AppState.selectedId = hitId; // Delete用にホバーした一つだけを記憶
+                        AppState.selectedFaceDir = null;
+                        
+                        UIController.hideFloatingMenu();
+                        UIController.clearGUI(); // ★全体移動なので個別の寸法パネルは閉じる
+                        
+                       // ★全体モードに移行
+                        isEditing = true;
+                        isGroupEditing = true;
+                        editingBlock = targetBlock;
+                        
+                        // ★縦に積まれているオブジェクト全てを集める
+                        // 1. まず下方向にたどって一番下のブロック（最下層）を見つける
+                        let baseBlock = targetBlock;
+                        let foundLower = true;
+                        while(foundLower) {
+                            foundLower = false;
+                            for (let ob of AppState.buildingData) {
+                                if (ob.id === baseBlock.id) continue;
+                                const obTop = (ob.y || 0) + ob.h;
+                                const baseBottom = baseBlock.y || 0;
+                                // 上下が接しており、かつX・Z座標が重なっているか判定
+                                if (Math.abs(obTop - baseBottom) < 1) {
+                                    const overlapX = Math.abs(ob.x - baseBlock.x) * 2 < (ob.w + baseBlock.w) - 1;
+                                    const overlapZ = Math.abs(ob.z - baseBlock.z) * 2 < (ob.d + baseBlock.d) - 1;
+                                    if (overlapX && overlapZ) {
+                                        baseBlock = ob; // より下のブロックを更新
+                                        foundLower = true;
+                                        break; 
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 2. 一番下のブロックから、上に向かって積まれているブロックを全取得
+                        editingGroupBlocks = AppState.getStackedBlocks([baseBlock]);
+                        
+                        updateGizmo(); 
+                        rebuildMeshes();
+                        UIController.updateStatusDisplay(currentTool);
+                    }
+                }
+            }
+        });
+
+    }   
 };

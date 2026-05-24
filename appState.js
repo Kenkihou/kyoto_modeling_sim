@@ -141,5 +141,66 @@ export const AppState = {
                 }
             }
         });
+    },
+    
+/**
+     * ★追加：JSONから状態を読み込み（履歴のリセットとマイグレーションを実行）
+     */
+    loadState(importedData, version) {
+        // 古いバージョンデータのデフォルト値補完
+        this.buildingData = this.migrateData(importedData, version);
+        this.selectedId = null;
+        this.selectedFaceDir = null;
+
+        // ロードした状態を起点として履歴を完全に初期化
+        this.history = [JSON.stringify(this.buildingData)];
+        this.historyIndex = 0;
+    },
+
+    /**
+     * ★追加：バージョニング互換性のためのデータマイグレーション
+     */
+    migrateData(data, version) {
+        if (!Array.isArray(data)) return [];
+
+        return data.map(b => {
+            // ★追加：古いデータに rootBuildingId がなければ、自身の id を割り当てる
+            if (!b.rootBuildingId) {
+                b.rootBuildingId = b.id;
+            }
+            // 大屋根（roof）のパラメータ構造の互換性チェックとデフォルト補完
+            if (b.roof && b.roof.type) {
+                const type = b.roof.type;
+                if (!b.roof.params) b.roof.params = {};
+
+                const defaultRoofParams = {
+                    '切妻': { eaves: 600, keraba: 300, slope: 4, rotate90: false, ridgeOffset: 0, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
+                    '寄棟': { eaves: 600, keraba: 600, slope: 4, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
+                    'パラペット修景': { pHeight: 300, slope: 3, out_px: 600, in_px: 400 },
+                    '陸屋根': { pHeight: 300 }
+                };
+
+                if (defaultRoofParams[type]) {
+                    // 該当する屋根タイプのオブジェクト自体がない場合は丸ごと補完
+                    if (!b.roof.params[type]) {
+                        b.roof.params[type] = { ...defaultRoofParams[type] };
+                    } else {
+                        // オブジェクトは存在しても、特定のキー（例: 後から追加された ridgeOffset など）が欠損していれば補完
+                        b.roof.params[type] = { ...defaultRoofParams[type], ...b.roof.params[type] };
+                    }
+                }
+            }
+
+            // その他の各種装飾パーツ用パラメータの器がなければ、空のオブジェクトで安全に初期化
+            if (b.visors && !b.visorParams) b.visorParams = {};
+            if (b.flatVisors && !b.flatVisorParams) b.flatVisorParams = {};
+            if (b.balconies && !b.balcParams) b.balcParams = {};
+            if (b.pilasters && !b.pilasterParams) b.pilasterParams = {};
+            if (b.windows && !b.windowParams) b.windowParams = {};
+            if (b.doors && !b.doorParams) b.doorParams = {};
+
+            return b;
+        });
     }
+    
 };

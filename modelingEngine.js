@@ -1055,131 +1055,242 @@ export const ModelingEngine = {
                     roofGroup.add(rMesh, rLine);
                 }
 
-            } else if (b.roof.type === '切妻') {
-                const isRot = rParams.rotate90; 
-                const profW = isRot ? d : w; 
-                const extD  = isRot ? w : d; 
+            } else if (b.roof.type === '切妻' || b.roof.type === '寄棟') {
                 
-                let e_L, e_R;
-                if (isRot) {
-                    e_L = e_pz; e_R = e_nz; 
+                let holeActive = false;
+                let hx = 0, hz = 0, hw = 0, hd = 0;
+                if (rParams.cutout && rParams.cutout.active) {
+                    holeActive = true;
+                    hx = -w/2 + rParams.cutout.x;
+                    hz = -d/2 + rParams.cutout.z;
+                    hw = rParams.cutout.w;
+                    hd = rParams.cutout.d;
+                }
+
+                let getRoofY;
+                
+                if (b.roof.type === '切妻') {
+                    const isRot = rParams.rotate90; 
+                    const profW = isRot ? d : w; 
+                    
+                    let rOffsetPct = rParams.ridgeOffset || 0; 
+                    let ridgeX = (profW * rOffsetPct) / 100;
+                    let spanL = (profW / 2) + ridgeX;
+                    let spanR = (profW / 2) - ridgeX;
+                    const ridgeH = Math.max(spanL, spanR) * slope;
+                    
+                    getRoofY = (x, z) => {
+                        let pos = isRot ? z : x;
+                        let dist = pos - ridgeX;
+                        if (rOffsetPct === 50 && dist > 0) return ridgeH + dist * slope;
+                        if (rOffsetPct === -50 && dist < 0) return ridgeH + Math.abs(dist) * slope;
+                        return ridgeH - Math.abs(dist) * slope;
+                    };
                 } else {
-                    e_L = e_nx; e_R = e_px; 
-                }
-                
-                // --- 棟の位置オフセットと妻面の計算 ---
-                let rOffsetPct = rParams.ridgeOffset || 0; 
-                let ridgeX = (profW * rOffsetPct) / 100;
-                
-                let spanL = (profW / 2) + ridgeX;
-                let spanR = (profW / 2) - ridgeX;
-                
-                // 勾配を一定に保つため、スパンが長い方を基準に棟の高さを決定
-                const ridgeH = Math.max(spanL, spanR) * slope;
-                
-                // 左右の壁の高さを計算（スパンが短い方は0、長い方は5角形の肩になる）
-                let y_wall_L = ridgeH - spanL * slope;
-                let y_wall_R = ridgeH - spanR * slope;
-
-                // 軒先のY座標（基本は軒先に向かって下がる）
-                let y_L_out = y_wall_L - e_L * slope;
-                let y_R_out = y_wall_R - e_R * slope;
-                
-                // 50% または -50% に振り切った時は「片流れ」として直線を延長する
-                if (rOffsetPct === 50) {
-                    y_R_out = y_wall_R + e_R * slope;
-                } else if (rOffsetPct === -50) {
-                    y_L_out = y_wall_L + e_L * slope;
+                    const maxH = Math.min(w, d) / 2 * slope;
+                    getRoofY = (x, z) => {
+                        const distX = w/2 - Math.abs(x);
+                        const distZ = d/2 - Math.abs(z);
+                        let h = Math.min(distX, distZ) * slope;
+                        return Math.min(h, maxH);
+                    };
                 }
 
-                // 壁（妻面）の描画（5角形対応）
-                const gShape = new THREE.Shape();
-                gShape.moveTo(-profW/2, 0); 
-                gShape.lineTo(profW/2, 0);
-                gShape.lineTo(profW/2, y_wall_R);
-                gShape.lineTo(ridgeX, ridgeH); 
-                gShape.lineTo(-profW/2, y_wall_L);
-                gShape.lineTo(-profW/2, 0);
-                const gGeo = new THREE.ExtrudeGeometry(gShape, { depth: extD, bevelEnabled: false });
+                const minX = -w/2 - e_nx; const maxX = w/2 + e_px;
+                const minZ = -d/2 - e_nz; const maxZ = d/2 + e_pz;
 
-                // 屋根の厚み（断面）の描画
-                const rShape = new THREE.Shape();
-                rShape.moveTo(-profW/2 - e_L, y_L_out + t);
-                rShape.lineTo(ridgeX, ridgeH + t);
-                rShape.lineTo(profW/2 + e_R, y_R_out + t);
-                rShape.lineTo(profW/2 + e_R, y_R_out);
-                rShape.lineTo(ridgeX, ridgeH);
-                rShape.lineTo(-profW/2 - e_L, y_L_out);
-                rShape.lineTo(-profW/2 - e_L, y_L_out + t);
-                
-                const roofD = isRot ? extD + e_nx + e_px : extD + e_nz + e_pz;
-                const rGeo = new THREE.ExtrudeGeometry(rShape, { depth: roofD, bevelEnabled: false });
+                let xArr = []; let zArr = [];
+                const addX = (v) => { const rv = Math.round(v * 100) / 100; if (!xArr.some(ex => Math.abs(ex - rv) < 0.1)) xArr.push(rv); };
+                const addZ = (v) => { const rv = Math.round(v * 100) / 100; if (!zArr.some(ez => Math.abs(ez - rv) < 0.1)) zArr.push(rv); };
 
-                if (isRot) {
-                    gGeo.translate(0, 0, -extD/2);
-                    rGeo.translate(0, 0, -(extD/2 + e_nx));
-                    gGeo.rotateY(Math.PI / 2);
-                    rGeo.rotateY(Math.PI / 2);
+                // 1. 絶対にズラしてはいけない外枠・建物の壁・切り欠きの線を「最優先」で登録
+                addX(minX); addX(maxX); addZ(minZ); addZ(maxZ);
+                if (holeActive) { addX(hx); addX(hx + hw); addZ(hz); addZ(hz + hd); }
+                addX(-w/2); addX(w/2); addZ(-d/2); addZ(d/2);
+
+                // 2. 屋根の棟（折り目）の交点を登録
+                if (b.roof.type === '切妻') {
+                    const ridgeXCoord = (rParams.rotate90 ? d : w) * (rParams.ridgeOffset || 0) / 100;
+                    if (rParams.rotate90) addZ(ridgeXCoord); else addX(ridgeXCoord);
                 } else {
-                    gGeo.translate(0, 0, -extD/2);
-                    rGeo.translate(0, 0, -(extD/2 + e_nz));
+                    const dw = w/2 - d/2;
+                    const baseXs = [...xArr];
+                    const baseZs = [...zArr];
+                    
+                    const maxAbsZ = Math.max(Math.abs(minZ), Math.abs(maxZ)) + 1.0;
+                    const maxAbsX = Math.max(Math.abs(minX), Math.abs(maxX)) + 1.0;
+                    
+                    // ★最重要修正：すべてのX, Z座標に対して「対称な点」と「交差する点」を網羅的に追加する
+                    // これにより、スライダーで切り欠きをどう動かしても、すべての棟ラインに頂点が必ず生成され、面が割れなくなります。
+                    baseXs.forEach(x => {
+                        const absX = Math.abs(x);
+                        addX(absX); addX(-absX); // 左右対称を保証
+                        const absZ = absX - dw;
+                        if (absZ >= -0.1 && absZ <= maxAbsZ) { addZ(absZ); addZ(-absZ); }
+                    });
+                    
+                    baseZs.forEach(z => {
+                        const absZ = Math.abs(z);
+                        addZ(absZ); addZ(-absZ); // 上下対称を保証
+                        const absX = absZ + dw;
+                        if (absX >= -0.1 && absX <= maxAbsX) { addX(absX); addX(-absX); }
+                    });
+                    
+                    if (w > d) { addX(dw); addX(-dw); addZ(0); }
+                    else { addZ(-dw); addZ(dw); addX(0); }
                 }
-                
-                const gMesh = new THREE.Mesh(gGeo, wallMat);
-                const gLine = new THREE.LineSegments(new THREE.EdgesGeometry(gGeo), edgeMat);
-                roofGroup.add(gMesh, gLine);
-                
-                const rMesh = new THREE.Mesh(rGeo, roofMat);
-                const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
-                roofGroup.add(rMesh, rLine);
 
-            } else {
-                let ridge_axis = w <= d ? 'Z' : 'X';
-                let H_ridge_rel = (ridge_axis === 'Z') ? (w / 2) * slope : (d / 2) * slope;
-                let drop = e_px * slope; 
+                xArr.sort((a,b) => a - b);
+                zArr.sort((a,b) => a - b);
+
+                const roofVerts = []; const roofInds = []; const roofMap = new Map();
+                const wallVerts = []; const wallInds = []; const wallMap = new Map();
+
+                const getVertIdx = (x, y, z, arr, map) => {
+                    const key = `${Math.round(x*100)}_${Math.round(y*100)}_${Math.round(z*100)}`;
+                    if (map.has(key)) return map.get(key);
+                    const idx = arr.length / 3;
+                    arr.push(x, y, z);
+                    map.set(key, idx);
+                    return idx;
+                };
+
+                const addTriRoof = (x0,y0,z0, x1,y1,z1, x2,y2,z2) => {
+                    roofInds.push(getVertIdx(x0,y0,z0, roofVerts, roofMap), getVertIdx(x1,y1,z1, roofVerts, roofMap), getVertIdx(x2,y2,z2, roofVerts, roofMap));
+                };
+                const addTriWall = (x0,y0,z0, x1,y1,z1, x2,y2,z2) => {
+                    wallInds.push(getVertIdx(x0,y0,z0, wallVerts, wallMap), getVertIdx(x1,y1,z1, wallVerts, wallMap), getVertIdx(x2,y2,z2, wallVerts, wallMap));
+                };
+
+                const addQuad = (x0, z0, x1, z1, isTop) => {
+                    const h0 = getRoofY(x0, z0) + (isTop ? t : 0);
+                    const h1 = getRoofY(x1, z0) + (isTop ? t : 0);
+                    const h2 = getRoofY(x1, z1) + (isTop ? t : 0);
+                    const h3 = getRoofY(x0, z1) + (isTop ? t : 0);
+                    
+                    const trueMidH = getRoofY((x0+x1)/2, (z0+z1)/2) + (isTop ? t : 0);
+                    const err02 = Math.abs((h0+h2)/2 - trueMidH);
+                    const err13 = Math.abs((h1+h3)/2 - trueMidH);
+                    
+                    if (isTop) {
+                        if (err02 <= err13) { addTriRoof(x0,h0,z0, x0,h3,z1, x1,h2,z1); addTriRoof(x0,h0,z0, x1,h2,z1, x1,h1,z0); }
+                        else { addTriRoof(x0,h0,z0, x0,h3,z1, x1,h1,z0); addTriRoof(x1,h1,z0, x0,h3,z1, x1,h2,z1); }
+                    } else {
+                        if (err02 <= err13) { addTriRoof(x0,h0,z0, x1,h2,z1, x0,h3,z1); addTriRoof(x0,h0,z0, x1,h1,z0, x1,h2,z1); }
+                        else { addTriRoof(x0,h0,z0, x1,h1,z0, x0,h3,z1); addTriRoof(x1,h1,z0, x1,h2,z1, x0,h3,z1); }
+                    }
+                };
+
+                const drawEdge = (x0, z0, x1, z1) => {
+                    const h0 = getRoofY(x0, z0);
+                    const h1 = getRoofY(x1, z1);
+                    addTriRoof(x0,h0,z0, x1,h1,z1, x1,h1+t,z1);
+                    addTriRoof(x0,h0,z0, x1,h1+t,z1, x0,h0+t,z0);
+                };
                 
-                const ry_top = H_ridge_rel + t;
-                const ey_top = -drop + t;
-                const ey_bot = -drop;
-                const ry_bot = H_ridge_rel;
-                
-                const ex = w / 2 + e_px;
-                const ez = d / 2 + e_px;
-                
-                let rZ = 0, rX = 0;
-                if (ridge_axis === 'Z') { rZ = (d - w) / 2; } else { rX = (w - d) / 2; }
-                
-                const p_1 = (ridge_axis === 'Z') ? [0, ry_top, rZ] : [rX, ry_top, 0];
-                const p_2 = (ridge_axis === 'Z') ? [0, ry_top, -rZ] : [-rX, ry_top, 0];
-                const pb_1 = (ridge_axis === 'Z') ? [0, ry_bot, rZ] : [rX, ry_bot, 0];
-                const pb_2 = (ridge_axis === 'Z') ? [0, ry_bot, -rZ] : [-rX, ry_bot, 0];
-                
-                const vertices = new Float32Array([
-                    p_1[0], ry_top, p_1[2], p_2[0], ry_top, p_2[2],
-                    ex, ey_top, ez,  -ex, ey_top, ez,  ex, ey_top, -ez,  -ex, ey_top, -ez,
-                    pb_1[0], ry_bot, pb_1[2], pb_2[0], ry_bot, pb_2[2],
-                    ex, ey_bot, ez,  -ex, ey_bot, ez,  ex, ey_bot, -ez,  -ex, ey_bot, -ez
-                ]);
-                const indices = [
-                    0,3,2, 1,4,5, 0,2,4, 0,4,1, 0,1,5, 0,5,3, 
-                    6,8,9, 7,11,10, 6,7,10, 6,10,8, 6,9,11, 6,11,7,
-                    2,3,9, 2,9,8, 4,10,11, 4,11,5, 2,8,10, 2,10,4, 3,5,11, 3,11,9
-                ];
-                if (ridge_axis !== 'Z') {
-                    indices.length = 0;
-                    indices.push(0,2,4, 1,5,3, 0,1,3, 0,3,2, 0,4,5, 0,5,1);
-                    indices.push(6,10,8, 7,9,11, 6,8,9, 6,9,7, 6,7,11, 6,11,10);
-                    indices.push(2,3,9, 2,9,8, 4,10,11, 4,11,5, 2,8,10, 2,10,4, 3,5,11, 3,11,9);
+                const drawGableSegment = (x0, z0, x1, z1) => {
+                    const h0 = getRoofY(x0, z0);
+                    const h1 = getRoofY(x1, z1);
+                    if (h0 <= 0.01 && h1 <= 0.01) return; 
+                    const y0 = Math.max(0, h0);
+                    const y1 = Math.max(0, h1);
+                    addTriWall(x0, 0, z0,  x1, 0, z1,  x1, y1, z1);
+                    addTriWall(x0, 0, z0,  x1, y1, z1,  x0, y0, z0);
+                };
+
+                const processHoleEdge = (x0, z0, x1, z1) => {
+                    const rY0 = getRoofY(x0, z0);
+                    const rY1 = getRoofY(x1, z1);
+                    addTriRoof(x0,rY0,z0, x1,rY1,z1, x1,rY1+t,z1);
+                    addTriRoof(x0,rY0,z0, x1,rY1+t,z1, x0,rY0+t,z0);
+                    
+                    const y0 = Math.max(0, rY0);
+                    const y1 = Math.max(0, rY1);
+                    addTriWall(x0,0,z0, x1,0,z1, x1,y1,z1);
+                    addTriWall(x0,0,z0, x1,y1,z1, x0,y0,z0);
+                };
+
+                for (let i = 0; i < xArr.length - 1; i++) {
+                    for (let j = 0; j < zArr.length - 1; j++) {
+                        const x0 = xArr[i], x1 = xArr[i+1];
+                        const z0 = zArr[j], z1 = zArr[j+1];
+                        if (holeActive) {
+                            const cx = (x0 + x1) / 2;
+                            const cz = (z0 + z1) / 2;
+                            if (cx > hx && cx < hx+hw && cz > hz && cz < hz+hd) continue;
+                        }
+                        addQuad(x0, z0, x1, z1, true); 
+                        addQuad(x0, z0, x1, z1, false);
+                    }
+                }
+
+                const isInside = (v, minV, maxV) => (v >= minV - 0.05 && v <= maxV + 0.05);
+
+                for(let i = xArr.length-1; i > 0; i--) {
+                    const cx = (xArr[i] + xArr[i-1]) / 2;
+                    if (holeActive && Math.abs(minZ - hz) < 0.1 && cx > hx && cx < hx+hw) continue;
+                    drawEdge(xArr[i], minZ, xArr[i-1], minZ); 
+                }
+                for(let j = 0; j < zArr.length-1; j++) {
+                    const cz = (zArr[j] + zArr[j+1]) / 2;
+                    if (holeActive && Math.abs(minX - hx) < 0.1 && cz > hz && cz < hz+hd) continue;
+                    drawEdge(minX, zArr[j], minX, zArr[j+1]); 
+                }
+                for(let i = 0; i < xArr.length-1; i++) {
+                    const cx = (xArr[i] + xArr[i+1]) / 2;
+                    if (holeActive && Math.abs(maxZ - (hz+hd)) < 0.1 && cx > hx && cx < hx+hw) continue;
+                    drawEdge(xArr[i], maxZ, xArr[i+1], maxZ); 
+                }
+                for(let j = zArr.length-1; j > 0; j--) {
+                    const cz = (zArr[j] + zArr[j-1]) / 2;
+                    if (holeActive && Math.abs(maxX - (hx+hw)) < 0.1 && cz > hz && cz < hz+hd) continue;
+                    drawEdge(maxX, zArr[j], maxX, zArr[j-1]); 
                 }
                 
+                if (b.roof.type === '切妻') {
+                    if (!rParams.rotate90) {
+                        for(let i = 0; i < xArr.length - 1; i++) {
+                            const x0 = xArr[i], x1 = xArr[i+1];
+                            if (x0 < -w/2 || x1 > w/2) continue; 
+                            const cx = (x0 + x1) / 2;
+                            if (!(holeActive && Math.abs(hz - (-d/2)) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x1, -d/2, x0, -d/2); 
+                            if (!(holeActive && Math.abs(hz+hd - d/2) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x0, d/2, x1, d/2); 
+                        }
+                    } else {
+                        for(let j = 0; j < zArr.length - 1; j++) {
+                            const z0 = zArr[j], z1 = zArr[j+1];
+                            if (z0 < -d/2 || z1 > d/2) continue;
+                            const cz = (z0 + z1) / 2;
+                            if (!(holeActive && Math.abs(hx - (-w/2)) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(-w/2, z0, -w/2, z1); 
+                            if (!(holeActive && Math.abs(hx+hw - w/2) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(w/2, z1, w/2, z0); 
+                        }
+                    }
+                }
+
+                if (holeActive) {
+                    if (hz > minZ) { for(let i=0; i<xArr.length-1; i++) if(isInside(xArr[i], hx, hx+hw) && isInside(xArr[i+1], hx, hx+hw)) processHoleEdge(xArr[i], hz, xArr[i+1], hz); }
+                    if (hx+hw < maxX) { for(let j=0; j<zArr.length-1; j++) if(isInside(zArr[j], hz, hz+hd) && isInside(zArr[j+1], hz, hz+hd)) processHoleEdge(hx+hw, zArr[j], hx+hw, zArr[j+1]); }
+                    if (hz+hd < maxZ) { for(let i=xArr.length-1; i>0; i--) if(isInside(xArr[i-1], hx, hx+hw) && isInside(xArr[i], hx, hx+hw)) processHoleEdge(xArr[i], hz+hd, xArr[i-1], hz+hd); }
+                    if (hx > minX) { for(let j=zArr.length-1; j>0; j--) if(isInside(zArr[j-1], hz, hz+hd) && isInside(zArr[j], hz, hz+hd)) processHoleEdge(hx, zArr[j], hx, zArr[j-1]); }
+                }
+
                 const rGeo = new THREE.BufferGeometry();
-                rGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-                rGeo.setIndex(indices);
+                rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(roofVerts), 3));
+                rGeo.setIndex(roofInds);
                 rGeo.computeVertexNormals();
-                
                 const rMesh = new THREE.Mesh(rGeo, roofMat);
                 const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
                 roofGroup.add(rMesh, rLine);
+
+                if (wallVerts.length > 0) {
+                    const wGeo = new THREE.BufferGeometry();
+                    wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts), 3));
+                    wGeo.setIndex(wallInds);
+                    wGeo.computeVertexNormals();
+                    const wMesh = new THREE.Mesh(wGeo, wallMat);
+                    const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
+                    roofGroup.add(wMesh, wLine);
+                }
             }
             
             // タグ付け (プッシュプルのための isRoof を付与)
