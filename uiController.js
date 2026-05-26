@@ -11,7 +11,7 @@ let rebuildMeshes = () => {};
 let setTool = () => {};
 
 const defaultRoofParams = {
-    '切妻': { eaves: 600, keraba: 300, slope: 4, rotate90: false, ridgeOffset: 0 },
+    '切妻': { eaves_l: 600, eaves_r: 600, keraba_l: 300, keraba_r: 300, slope: 4, rotate90: false, ridgeOffset: 0 },
     '寄棟': { eaves: 600, keraba: 600, slope: 4 },
     'パラペット修景': { pHeight: 300, slope: 3, out_px: 600, in_px: 400 },
     '陸屋根': { pHeight: 300 }
@@ -75,23 +75,43 @@ export const UIController = {
             };
 
             if (type === '切妻') {
-                currentGUI.add(params, 'eaves', 0, 2000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
-                currentGUI.add(params, 'keraba', 0, 2000, 100).name('ケラバ (mm)').onChange(onChange).onFinishChange(onFinishChange);
+                // 古い形式のセーブデータが読み込まれた場合のデフォルト補完（安全対策）
+                if (params.eaves_l === undefined) params.eaves_l = params.eaves !== undefined ? params.eaves : 600;
+                if (params.eaves_r === undefined) params.eaves_r = params.eaves !== undefined ? params.eaves : 600;
+                if (params.keraba_l === undefined) params.keraba_l = params.keraba !== undefined ? params.keraba : 300;
+                if (params.keraba_r === undefined) params.keraba_r = params.keraba !== undefined ? params.keraba : 300;
+
+                const isRot = params.rotate90;
+                // 回転状態に応じてスライダーのラベル名を分かりやすく動的に切り替える
+                const labelEavesL = isRot ? '軒の出 (手前) (mm)' : '軒の出 (左) (mm)';
+                const labelEavesR = isRot ? '軒の出 (奥) (mm)'  : '軒の出 (右) (mm)';
+                const labelKerabaL = isRot ? 'ケラバ (左) (mm)'   : 'ケラバ (手前) (mm)';
+                const labelKerabaR = isRot ? 'ケラバ (右) (mm)'   : 'ケラバ (奥) (mm)';
+
+                currentGUI.add(params, 'eaves_l', 0, 2000, 100).name(labelEavesL).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(params, 'eaves_r', 0, 2000, 100).name(labelEavesR).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(params, 'keraba_l', 0, 2000, 100).name(labelKerabaL).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(params, 'keraba_r', 0, 2000, 100).name(labelKerabaR).onChange(onChange).onFinishChange(onFinishChange);
+                
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
                 const ridgeCtrl = currentGUI.add(params, 'ridgeOffset', -50, 50, 1).name('棟の位置 (%)');
                 ridgeCtrl.onChange((val) => {
-                // -5% 〜 5% の範囲に入ったら 0%（中央の切妻）にスナップ
-                if (val > -5 && val < 5 && val !== 0) {
-                    params.ridgeOffset = 0;
-                    ridgeCtrl.updateDisplay(); // スライダーの見た目も強制的に0に合わせる
-                }
-                onChange();
-            }).onFinishChange(onFinishChange);
+                    if (val > -5 && val < 5 && val !== 0) {
+                        params.ridgeOffset = 0;
+                        ridgeCtrl.updateDisplay();
+                    }
+                    onChange();
+                }).onFinishChange(onFinishChange);
             } else if (type === '寄棟') {
                 currentGUI.add(params, 'eaves', 0, 2000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
             } 
-            
+            // ★追加：水平軒裏の切り替えトグル
+            if (type === '切妻' || type === '寄棟') {
+                if (params.flatEaves === undefined) params.flatEaves = false;
+                currentGUI.add(params, 'flatEaves').name('水平軒裏にする').onChange(onChange).onFinishChange(onFinishChange);
+            }
+
             // ★追加：切り欠きのGUI設定（切妻・寄棟 共通）
             if (type === '切妻' || type === '寄棟') {
                 if (!params.cutout) params.cutout = { active: false, x: 0, z: 0, w: 1000, d: 1000 };
@@ -295,6 +315,92 @@ export const UIController = {
             const resetObj = { reset: () => { b.doorParams[faceDir] = { offsetX: 0 }; onFinishChange(); rebuildMeshes(); this.updateGUI(b, 'door', faceDir); }};
             currentGUI.add(resetObj, 'reset').name('↺ デフォルトに戻す');
         }
+        // uiController.js の updateGUI 内、一番下の else if (targetType === 'door') の後に追加
+        else if (targetType === 'sodeWall') {
+            if (!faceDir || !b.sodeWalls || !b.sodeWalls[faceDir]) return;
+            const dName = { 'pz': '手前', 'nz': '奥', 'px': '右', 'nx': '左' }[faceDir] || faceDir;
+
+            currentGUI = new GUI({ title: `そで壁の設定 (${dName}面)` });
+            currentGUI.domElement.style.position = 'absolute';
+            currentGUI.domElement.style.top = '10px'; 
+            currentGUI.domElement.style.right = '10px';
+
+            const currentMode = b.sodeWalls[faceDir];
+            const p = b.sodeParams[faceDir];
+            const maxGap = Math.min(1500, Math.max(0, b.h - 100));
+            // 表示切り替え用のオブジェクト
+            const modeLabels = { 'both': '両方', 'right': '右のみ', 'left': '左のみ' };
+            const nextMode = { 'both': 'right', 'right': 'left', 'left': 'both' }; // 両方→右→左の順
+
+            const modeObj = {
+                cycleMode: () => {
+                    b.sodeWalls[faceDir] = nextMode[b.sodeWalls[faceDir]];
+                    onFinishChange(); // 履歴に保存
+                    rebuildMeshes();  // 3Dモデルを更新
+                    this.updateGUI(b, 'sodeWall', faceDir); // GUIを再描画してフォルダを出し分ける
+                }
+            };
+            
+            // ボタンとしてGUIに追加し、現在の状態を名前に表示する
+            currentGUI.add(modeObj, 'cycleMode').name(`🔄 表示切替 (現在: ${modeLabels[currentMode]})`);
+
+            // 左側の設定（両方、または左のみのとき表示）
+            if (currentMode === 'both' || currentMode === 'left') {
+                if (p.left.topGap > maxGap) p.left.topGap = maxGap; // 安全クランプ
+                
+                const leftFolder = currentGUI.addFolder('左そで壁');
+                leftFolder.add(p.left, 'depth', 100, 2000, 100).name('奥行 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+                leftFolder.add(p.left, 'topGap', 0, maxGap, 100).name('上面隙間 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+            }
+
+            // 右側の設定（両方、または右のみのとき表示）
+            if (currentMode === 'both' || currentMode === 'right') {
+                if (p.right.topGap > maxGap) p.right.topGap = maxGap; // 安全クランプ
+                
+                const rightFolder = currentGUI.addFolder('右そで壁');
+                rightFolder.add(p.right, 'depth', 100, 2000, 100).name('奥行 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+                rightFolder.add(p.right, 'topGap', 0, maxGap, 100).name('上面隙間 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+            }
+
+            const resetObj = { 
+                reset: () => { 
+                    b.sodeParams[faceDir] = { 
+                        left: { depth: 900, topGap: 0 }, 
+                        right: { depth: 900, topGap: 0 } 
+                    }; 
+                    onFinishChange(); 
+                    rebuildMeshes(); 
+                    this.updateGUI(b, 'sodeWall', faceDir); 
+                }
+            };
+            currentGUI.add(resetObj, 'reset').name('↺ デフォルトに戻す');
+        }
+
+        else if (targetType === 'tareWall') {
+            if (!faceDir || !b.tareWalls || !b.tareWalls[faceDir]) return;
+            const dName = { 'pz': '手前', 'nz': '奥', 'px': '右', 'nx': '左' }[faceDir] || faceDir;
+
+            currentGUI = new GUI({ title: `垂れ壁の設定 (${dName}面)` });
+            currentGUI.domElement.style.position = 'absolute';
+            currentGUI.domElement.style.top = '10px'; 
+            currentGUI.domElement.style.right = '10px';
+
+            const p = b.tareParams[faceDir];
+
+            // 下がり幅（高さ）のスライダー（100mm〜1500mm）
+            currentGUI.add(p, 'height', 100, 1500, 100).name('下がり幅 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+
+            const resetObj = { 
+                reset: () => { 
+                    b.tareParams[faceDir] = { height: 900 }; 
+                    onFinishChange(); 
+                    rebuildMeshes(); 
+                    this.updateGUI(b, 'tareWall', faceDir); 
+                }
+            };
+            currentGUI.add(resetObj, 'reset').name('↺ デフォルトに戻す');
+        }
+        
         else if (targetType === 'size') {
             currentGUI = new GUI({ title: `基本寸法の手入力` });
             currentGUI.domElement.style.position = 'absolute';
@@ -449,6 +555,23 @@ export const UIController = {
                 btnDoor.onclick = () => { window.toggleDoor(faceDir); };
                 menu.appendChild(btnDoor);
             }
+            const hasSode = block.sodeWalls && block.sodeWalls[faceDir];
+            const btnSode = document.createElement('div');
+            btnSode.className = 'float-btn';
+            btnSode.innerText = hasSode ? 'そで壁を削除' : 'そで壁を追加';
+            if (hasSode) btnSode.classList.add('danger');
+            
+            // 呼び出す関数名をわかりやすく toggleSodeWall に変更します
+            btnSode.onclick = () => { window.toggleSodeWall(faceDir); };
+            menu.appendChild(btnSode);
+            // ★追加：垂れ壁の追加/削除ボタン
+            const tareType = block.tareWalls && block.tareWalls[faceDir];
+            const btnTare = document.createElement('div');
+            btnTare.className = 'float-btn';
+            btnTare.innerText = tareType ? '垂れ壁を削除' : '垂れ壁を追加';
+            if (tareType) btnTare.classList.add('danger');
+            btnTare.onclick = () => { window.toggleTareWall(faceDir); };
+            menu.appendChild(btnTare);
         }
     },
 
@@ -581,5 +704,58 @@ export const UIController = {
             });
             if (removed) this.clearGUI();
         });
+
+        window.toggleSodeWall = (dir) => executeAction((b) => {
+            if (!b.sodeWalls) b.sodeWalls = {};
+            if (!b.sodeParams) b.sodeParams = {};
+            
+            // すでに存在する場合は削除、存在しない場合は「両方」で追加の2段階のみ
+            if (!b.sodeWalls[dir]) {
+                b.sodeWalls[dir] = 'both';
+                b.sodeParams[dir] = { left: { depth: 900, topGap: 0 }, right: { depth: 900, topGap: 0 } };
+            } else {
+                delete b.sodeWalls[dir];
+                delete b.sodeParams[dir];
+            }
+            
+            if (Object.keys(b.sodeWalls).length === 0) delete b.sodeWalls;
+            if (Object.keys(b.sodeParams).length === 0) delete b.sodeParams;
+
+            rebuildMeshes();
+
+            this.showFloatingMenu(lastMenuX, lastMenuY, b, 'side', dir);
+            if (b.sodeWalls && b.sodeWalls[dir]) {
+                this.updateGUI(b, 'sodeWall', dir); 
+            } else {
+                this.updateGUI(b, 'side', dir);
+            }
+        });
+        // ★追加：垂れ壁のトグル処理
+        window.toggleTareWall = (dir) => executeAction((b) => {
+            if (!b.tareWalls) b.tareWalls = {};
+            if (!b.tareParams) b.tareParams = {};
+            
+            // 存在しない場合は「追加（初期値900）」、存在する場合は「削除」
+            if (!b.tareWalls[dir]) {
+                b.tareWalls[dir] = true;
+                b.tareParams[dir] = { height: 900 };
+            } else {
+                delete b.tareWalls[dir];
+                delete b.tareParams[dir];
+            }
+            
+            if (Object.keys(b.tareWalls).length === 0) delete b.tareWalls;
+            if (Object.keys(b.tareParams).length === 0) delete b.tareParams;
+
+            rebuildMeshes();
+
+            this.showFloatingMenu(lastMenuX, lastMenuY, b, 'side', dir);
+            if (b.tareWalls && b.tareWalls[dir]) {
+                this.updateGUI(b, 'tareWall', dir); 
+            } else {
+                this.updateGUI(b, 'side', dir);
+            }
+        });
+
     }
 };

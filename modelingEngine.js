@@ -929,12 +929,24 @@ export const ModelingEngine = {
             let e_px = 0, e_nx = 0, e_pz = 0, e_nz = 0;
 
             if (b.roof.type === '切妻') {
+                // 個別パラメータを取得（古いデータや未定義の場合は従来の値をフォールバック）
+                const el = rParams.eaves_l !== undefined ? rParams.eaves_l : (rParams.eaves || 600);
+                const er = rParams.eaves_r !== undefined ? rParams.eaves_r : (rParams.eaves || 600);
+                const kl = rParams.keraba_l !== undefined ? rParams.keraba_l : (rParams.keraba || 300);
+                const kr = rParams.keraba_r !== undefined ? rParams.keraba_r : (rParams.keraba || 300);
+
                 if (rParams.rotate90) {
-                    e_px = rParams.keraba; e_nx = rParams.keraba;
-                    e_pz = rParams.eaves;  e_nz = rParams.eaves;
+                    // 90度回転時：軒の出が前後（pz/nz）、ケラバが左右（nx/px）
+                    e_px = kr;
+                    e_nx = kl;
+                    e_pz = el;
+                    e_nz = er;
                 } else {
-                    e_px = rParams.eaves;  e_nx = rParams.eaves;
-                    e_pz = rParams.keraba; e_nz = rParams.keraba;
+                    // 通常時：軒の出が左右（nx/px）、ケラバが前後（pz/nz）
+                    e_px = er;
+                    e_nx = el;
+                    e_pz = kl;
+                    e_nz = kr;
                 }
             } else if (b.roof.type === '寄棟') {
                 e_px = rParams.eaves; e_nx = rParams.eaves;
@@ -1139,11 +1151,61 @@ export const ModelingEngine = {
                     if (w > d) { addX(dw); addX(-dw); addZ(0); }
                     else { addZ(-dw); addZ(dw); addX(0); }
                 }
+// ★追加: 水平軒裏のための最小Y（軒先最下端）の計算
+                const isFlatEaves = rParams.flatEaves === true;
+                let minY_px = 0, minY_nx = 0, minY_pz = 0, minY_nz = 0, minY_all = 0;
+                
+                if (b.roof.type === '寄棟') {
+                    minY_all = getRoofY(w/2 + e_px, 0);
+                } else if (b.roof.type === '切妻') {
+                    if (!rParams.rotate90) {
+                        minY_px = getRoofY(w/2 + e_px, 0);
+                        minY_nx = getRoofY(-w/2 - e_nx, 0);
+                    } else {
+                        minY_pz = getRoofY(0, d/2 + e_pz);
+                        minY_nz = getRoofY(0, -d/2 - e_nz);
+                    }
+                }
+                
+                const getBottomY = (x, z, cx, cz) => {
+                    if (!isFlatEaves) return getRoofY(x, z);
+                    if (b.roof.type === '寄棟') {
+                        if (Math.abs(cx) > w/2 + 0.01 || Math.abs(cz) > d/2 + 0.01) return minY_all;
+                    } else if (b.roof.type === '切妻') {
+                        if (!rParams.rotate90) {
+                            if (cx > w/2 + 0.01) return minY_px;
+                            if (cx < -w/2 - 0.01) return minY_nx;
+                        } else {
+                            if (cz > d/2 + 0.01) return minY_pz;
+                            if (cz < -d/2 - 0.01) return minY_nz;
+                        }
+                    }
+                    return getRoofY(x, z);
+                };
 
                 xArr.sort((a,b) => a - b);
                 zArr.sort((a,b) => a - b);
 
-                const roofVerts = []; const roofInds = []; const roofMap = new Map();
+                // --- ここから 2層構造の屋根メッシュ生成 ---
+                const isInside = (v, minV, maxV) => (v >= minV - 0.05 && v <= maxV + 0.05);
+
+                const t_lower = 150; // 下層（軒裏・破風）の厚み
+                const t_upper = 150; // 上層（屋根葺き材）の厚み
+
+                // 下層（白）の描画ルール
+                const lowerParams = {
+                    verts: [], inds: [], map: new Map(),
+                    getTopY: (x, z) => getRoofY(x, z) + t_lower,
+                    getBotY: (x, z, cx, cz) => getBottomY(x, z, cx, cz)
+                };
+
+                // 上層（黒）の描画ルール
+                const upperParams = {
+                    verts: [], inds: [], map: new Map(),
+                    getTopY: (x, z) => getRoofY(x, z) + t_lower + t_upper,
+                    getBotY: (x, z, cx, cz) => getRoofY(x, z) + t_lower 
+                };
+
                 const wallVerts = []; const wallInds = []; const wallMap = new Map();
 
                 const getVertIdx = (x, y, z, arr, map) => {
@@ -1155,39 +1217,151 @@ export const ModelingEngine = {
                     return idx;
                 };
 
-                const addTriRoof = (x0,y0,z0, x1,y1,z1, x2,y2,z2) => {
-                    roofInds.push(getVertIdx(x0,y0,z0, roofVerts, roofMap), getVertIdx(x1,y1,z1, roofVerts, roofMap), getVertIdx(x2,y2,z2, roofVerts, roofMap));
-                };
-                const addTriWall = (x0,y0,z0, x1,y1,z1, x2,y2,z2) => {
-                    wallInds.push(getVertIdx(x0,y0,z0, wallVerts, wallMap), getVertIdx(x1,y1,z1, wallVerts, wallMap), getVertIdx(x2,y2,z2, wallVerts, wallMap));
+                const addTri = (x0,y0,z0, x1,y1,z1, x2,y2,z2, verts, inds, map) => {
+                    inds.push(
+                        getVertIdx(x0,y0,z0, verts, map),
+                        getVertIdx(x1,y1,z1, verts, map),
+                        getVertIdx(x2,y2,z2, verts, map)
+                    );
                 };
 
-                const addQuad = (x0, z0, x1, z1, isTop) => {
-                    const h0 = getRoofY(x0, z0) + (isTop ? t : 0);
-                    const h1 = getRoofY(x1, z0) + (isTop ? t : 0);
-                    const h2 = getRoofY(x1, z1) + (isTop ? t : 0);
-                    const h3 = getRoofY(x0, z1) + (isTop ? t : 0);
+                const addTriWall = (x0,y0,z0, x1,y1,z1, x2,y2,z2) => {
+                    addTri(x0,y0,z0, x1,y1,z1, x2,y2,z2, wallVerts, wallInds, wallMap);
+                };
+
+                const addQuadLayer = (x0, z0, x1, z1, isTop, params) => {
+                    const cx = (x0 + x1) / 2;
+                    const cz = (z0 + z1) / 2;
                     
-                    const trueMidH = getRoofY((x0+x1)/2, (z0+z1)/2) + (isTop ? t : 0);
+                    const h0 = isTop ? params.getTopY(x0, z0, cx, cz) : params.getBotY(x0, z0, cx, cz);
+                    const h1 = isTop ? params.getTopY(x1, z0, cx, cz) : params.getBotY(x1, z0, cx, cz);
+                    const h2 = isTop ? params.getTopY(x1, z1, cx, cz) : params.getBotY(x1, z1, cx, cz);
+                    const h3 = isTop ? params.getTopY(x0, z1, cx, cz) : params.getBotY(x0, z1, cx, cz);
+                    
+                    const trueMidH = isTop ? params.getTopY(cx, cz, cx, cz) : params.getBotY(cx, cz, cx, cz);
+                        
                     const err02 = Math.abs((h0+h2)/2 - trueMidH);
                     const err13 = Math.abs((h1+h3)/2 - trueMidH);
                     
                     if (isTop) {
-                        if (err02 <= err13) { addTriRoof(x0,h0,z0, x0,h3,z1, x1,h2,z1); addTriRoof(x0,h0,z0, x1,h2,z1, x1,h1,z0); }
-                        else { addTriRoof(x0,h0,z0, x0,h3,z1, x1,h1,z0); addTriRoof(x1,h1,z0, x0,h3,z1, x1,h2,z1); }
+                        if (err02 <= err13) { 
+                            addTri(x0,h0,z0, x0,h3,z1, x1,h2,z1, params.verts, params.inds, params.map); 
+                            addTri(x0,h0,z0, x1,h2,z1, x1,h1,z0, params.verts, params.inds, params.map); 
+                        } else { 
+                            addTri(x0,h0,z0, x0,h3,z1, x1,h1,z0, params.verts, params.inds, params.map); 
+                            addTri(x1,h1,z0, x0,h3,z1, x1,h2,z1, params.verts, params.inds, params.map); 
+                        }
                     } else {
-                        if (err02 <= err13) { addTriRoof(x0,h0,z0, x1,h2,z1, x0,h3,z1); addTriRoof(x0,h0,z0, x1,h1,z0, x1,h2,z1); }
-                        else { addTriRoof(x0,h0,z0, x1,h1,z0, x0,h3,z1); addTriRoof(x1,h1,z0, x1,h2,z1, x0,h3,z1); }
+                        if (err02 <= err13) { 
+                            addTri(x0,h0,z0, x1,h2,z1, x0,h3,z1, params.verts, params.inds, params.map); 
+                            addTri(x0,h0,z0, x1,h1,z0, x1,h2,z1, params.verts, params.inds, params.map); 
+                        } else { 
+                            addTri(x0,h0,z0, x1,h1,z0, x0,h3,z1, params.verts, params.inds, params.map); 
+                            addTri(x1,h1,z0, x1,h2,z1, x0,h3,z1, params.verts, params.inds, params.map); 
+                        }
                     }
                 };
 
-                const drawEdge = (x0, z0, x1, z1) => {
-                    const h0 = getRoofY(x0, z0);
-                    const h1 = getRoofY(x1, z1);
-                    addTriRoof(x0,h0,z0, x1,h1,z1, x1,h1+t,z1);
-                    addTriRoof(x0,h0,z0, x1,h1+t,z1, x0,h0+t,z0);
+                const drawEdgeLayer = (x0, z0, x1, z1, params) => {
+                    const cx = (x0 + x1) / 2;
+                    const cz = (z0 + z1) / 2;
+                    const t0 = params.getTopY(x0, z0, cx, cz);
+                    const t1 = params.getTopY(x1, z1, cx, cz);
+                    const b0 = params.getBotY(x0, z0, cx, cz);
+                    const b1 = params.getBotY(x1, z1, cx, cz);
+                    
+                    addTri(x0,b0,z0, x1,b1,z1, x1,t1,z1, params.verts, params.inds, params.map);
+                    addTri(x0,b0,z0, x1,t1,z1, x0,t0,z0, params.verts, params.inds, params.map);
                 };
-                
+
+                // 各レイヤー（白・黒）を順番に構築する関数
+                const processLayers = (params) => {
+                    for (let i = 0; i < xArr.length - 1; i++) {
+                        for (let j = 0; j < zArr.length - 1; j++) {
+                            const x0 = xArr[i], x1 = xArr[i+1];
+                            const z0 = zArr[j], z1 = zArr[j+1];
+                            if (holeActive) {
+                                const cx = (x0 + x1) / 2;
+                                const cz = (z0 + z1) / 2;
+                                if (cx > hx && cx < hx+hw && cz > hz && cz < hz+hd) continue;
+                            }
+                            addQuadLayer(x0, z0, x1, z1, true, params); 
+                            addQuadLayer(x0, z0, x1, z1, false, params);
+                        }
+                    }
+
+                    for(let i = xArr.length-1; i > 0; i--) {
+                        const cx = (xArr[i] + xArr[i-1]) / 2;
+                        if (holeActive && Math.abs(minZ - hz) < 0.1 && cx > hx && cx < hx+hw) continue;
+                        drawEdgeLayer(xArr[i], minZ, xArr[i-1], minZ, params); 
+                    }
+                    for(let j = 0; j < zArr.length-1; j++) {
+                        const cz = (zArr[j] + zArr[j+1]) / 2;
+                        if (holeActive && Math.abs(minX - hx) < 0.1 && cz > hz && cz < hz+hd) continue;
+                        drawEdgeLayer(minX, zArr[j], minX, zArr[j+1], params); 
+                    }
+                    for(let i = 0; i < xArr.length-1; i++) {
+                        const cx = (xArr[i] + xArr[i+1]) / 2;
+                        if (holeActive && Math.abs(maxZ - (hz+hd)) < 0.1 && cx > hx && cx < hx+hw) continue;
+                        drawEdgeLayer(xArr[i], maxZ, xArr[i+1], maxZ, params); 
+                    }
+                    for(let j = zArr.length-1; j > 0; j--) {
+                        const cz = (zArr[j] + zArr[j-1]) / 2;
+                        if (holeActive && Math.abs(maxX - (hx+hw)) < 0.1 && cz > hz && cz < hz+hd) continue;
+                        drawEdgeLayer(maxX, zArr[j], maxX, zArr[j-1], params); 
+                    }
+
+                    if (holeActive) {
+                        if (hz > minZ) { for(let i=0; i<xArr.length-1; i++) if(isInside(xArr[i], hx, hx+hw) && isInside(xArr[i+1], hx, hx+hw)) drawEdgeLayer(xArr[i], hz, xArr[i+1], hz, params); }
+                        if (hx+hw < maxX) { for(let j=0; j<zArr.length-1; j++) if(isInside(zArr[j], hz, hz+hd) && isInside(zArr[j+1], hz, hz+hd)) drawEdgeLayer(hx+hw, zArr[j], hx+hw, zArr[j+1], params); }
+                        if (hz+hd < maxZ) { for(let i=xArr.length-1; i>0; i--) if(isInside(xArr[i-1], hx, hx+hw) && isInside(xArr[i], hx, hx+hw)) drawEdgeLayer(xArr[i], hz+hd, xArr[i-1], hz+hd, params); }
+                        if (hx > minX) { for(let j=zArr.length-1; j>0; j--) if(isInside(zArr[j-1], hz, hz+hd) && isInside(zArr[j], hz, hz+hd)) drawEdgeLayer(hx, zArr[j], hx, zArr[j-1], params); }
+                    }
+
+                    if (isFlatEaves) {
+                        const fillVerticalGap = (x0, z0, x1, z1, cx1, cz1, cx2, cz2) => {
+                            const y1_0 = params.getBotY(x0, z0, cx1, cz1);
+                            const y1_1 = params.getBotY(x1, z1, cx1, cz1);
+                            const y2_0 = params.getBotY(x0, z0, cx2, cz2);
+                            const y2_1 = params.getBotY(x1, z1, cx2, cz2);
+                            
+                            if (Math.abs(y1_0 - y2_0) > 1.0 || Math.abs(y1_1 - y2_1) > 1.0) {
+                                addTri(x0, y1_0, z0, x1, y1_1, z1, x1, y2_1, z1, params.verts, params.inds, params.map);
+                                addTri(x0, y1_0, z0, x1, y2_1, z1, x0, y2_0, z0, params.verts, params.inds, params.map);
+                            }
+                        };
+                        for (let i = 1; i < xArr.length - 1; i++) {
+                            const x = xArr[i];
+                            for (let j = 0; j < zArr.length - 1; j++) {
+                                const z0 = zArr[j], z1 = zArr[j+1];
+                                const cx_L = x - 0.01, cx_R = x + 0.01, cz = (z0 + z1) / 2;
+                                if (holeActive && cz > hz && cz < hz+hd) {
+                                    if (cx_L > hx && cx_L < hx+hw) continue;
+                                    if (cx_R > hx && cx_R < hx+hw) continue;
+                                }
+                                fillVerticalGap(x, z0, x, z1, cx_L, cz, cx_R, cz);
+                            }
+                        }
+                        for (let j = 1; j < zArr.length - 1; j++) {
+                            const z = zArr[j];
+                            for (let i = 0; i < xArr.length - 1; i++) {
+                                const x0 = xArr[i], x1 = xArr[i+1];
+                                const cx = (x0 + x1) / 2, cz_B = z - 0.01, cz_F = z + 0.01;
+                                if (holeActive && cx > hx && cx < hx+hw) {
+                                    if (cz_B > hz && cz_B < hz+hd) continue;
+                                    if (cz_F > hz && cz_F < hz+hd) continue;
+                                }
+                                fillVerticalGap(x0, z, x1, z, cx, cz_B, cx, cz_F);
+                            }
+                        }
+                    }
+                };
+
+                // ★下層（白）と上層（黒）を順番に生成
+                processLayers(lowerParams);
+                processLayers(upperParams);
+
+                // --- 1回だけ実行する壁面の描画 ---
                 const drawGableSegment = (x0, z0, x1, z1) => {
                     const h0 = getRoofY(x0, z0);
                     const h1 = getRoofY(x1, z1);
@@ -1198,55 +1372,17 @@ export const ModelingEngine = {
                     addTriWall(x0, 0, z0,  x1, y1, z1,  x0, y0, z0);
                 };
 
-                const processHoleEdge = (x0, z0, x1, z1) => {
-                    const rY0 = getRoofY(x0, z0);
-                    const rY1 = getRoofY(x1, z1);
-                    addTriRoof(x0,rY0,z0, x1,rY1,z1, x1,rY1+t,z1);
-                    addTriRoof(x0,rY0,z0, x1,rY1+t,z1, x0,rY0+t,z0);
-                    
-                    const y0 = Math.max(0, rY0);
-                    const y1 = Math.max(0, rY1);
+                const processHoleWall = (x0, z0, x1, z1) => {
+                    const cx = (x0 + x1) / 2;
+                    const cz = (z0 + z1) / 2;
+                    const b0 = getBottomY(x0, z0, cx, cz);
+                    const b1 = getBottomY(x1, z1, cx, cz);
+                    const y0 = Math.max(0, b0);
+                    const y1 = Math.max(0, b1);
                     addTriWall(x0,0,z0, x1,0,z1, x1,y1,z1);
                     addTriWall(x0,0,z0, x1,y1,z1, x0,y0,z0);
                 };
 
-                for (let i = 0; i < xArr.length - 1; i++) {
-                    for (let j = 0; j < zArr.length - 1; j++) {
-                        const x0 = xArr[i], x1 = xArr[i+1];
-                        const z0 = zArr[j], z1 = zArr[j+1];
-                        if (holeActive) {
-                            const cx = (x0 + x1) / 2;
-                            const cz = (z0 + z1) / 2;
-                            if (cx > hx && cx < hx+hw && cz > hz && cz < hz+hd) continue;
-                        }
-                        addQuad(x0, z0, x1, z1, true); 
-                        addQuad(x0, z0, x1, z1, false);
-                    }
-                }
-
-                const isInside = (v, minV, maxV) => (v >= minV - 0.05 && v <= maxV + 0.05);
-
-                for(let i = xArr.length-1; i > 0; i--) {
-                    const cx = (xArr[i] + xArr[i-1]) / 2;
-                    if (holeActive && Math.abs(minZ - hz) < 0.1 && cx > hx && cx < hx+hw) continue;
-                    drawEdge(xArr[i], minZ, xArr[i-1], minZ); 
-                }
-                for(let j = 0; j < zArr.length-1; j++) {
-                    const cz = (zArr[j] + zArr[j+1]) / 2;
-                    if (holeActive && Math.abs(minX - hx) < 0.1 && cz > hz && cz < hz+hd) continue;
-                    drawEdge(minX, zArr[j], minX, zArr[j+1]); 
-                }
-                for(let i = 0; i < xArr.length-1; i++) {
-                    const cx = (xArr[i] + xArr[i+1]) / 2;
-                    if (holeActive && Math.abs(maxZ - (hz+hd)) < 0.1 && cx > hx && cx < hx+hw) continue;
-                    drawEdge(xArr[i], maxZ, xArr[i+1], maxZ); 
-                }
-                for(let j = zArr.length-1; j > 0; j--) {
-                    const cz = (zArr[j] + zArr[j-1]) / 2;
-                    if (holeActive && Math.abs(maxX - (hx+hw)) < 0.1 && cz > hz && cz < hz+hd) continue;
-                    drawEdge(maxX, zArr[j], maxX, zArr[j-1]); 
-                }
-                
                 if (b.roof.type === '切妻') {
                     if (!rParams.rotate90) {
                         for(let i = 0; i < xArr.length - 1; i++) {
@@ -1268,29 +1404,30 @@ export const ModelingEngine = {
                 }
 
                 if (holeActive) {
-                    if (hz > minZ) { for(let i=0; i<xArr.length-1; i++) if(isInside(xArr[i], hx, hx+hw) && isInside(xArr[i+1], hx, hx+hw)) processHoleEdge(xArr[i], hz, xArr[i+1], hz); }
-                    if (hx+hw < maxX) { for(let j=0; j<zArr.length-1; j++) if(isInside(zArr[j], hz, hz+hd) && isInside(zArr[j+1], hz, hz+hd)) processHoleEdge(hx+hw, zArr[j], hx+hw, zArr[j+1]); }
-                    if (hz+hd < maxZ) { for(let i=xArr.length-1; i>0; i--) if(isInside(xArr[i-1], hx, hx+hw) && isInside(xArr[i], hx, hx+hw)) processHoleEdge(xArr[i], hz+hd, xArr[i-1], hz+hd); }
-                    if (hx > minX) { for(let j=zArr.length-1; j>0; j--) if(isInside(zArr[j-1], hz, hz+hd) && isInside(zArr[j], hz, hz+hd)) processHoleEdge(hx, zArr[j], hx, zArr[j-1]); }
+                    if (hz > minZ) { for(let i=0; i<xArr.length-1; i++) if(isInside(xArr[i], hx, hx+hw) && isInside(xArr[i+1], hx, hx+hw)) processHoleWall(xArr[i], hz, xArr[i+1], hz); }
+                    if (hx+hw < maxX) { for(let j=0; j<zArr.length-1; j++) if(isInside(zArr[j], hz, hz+hd) && isInside(zArr[j+1], hz, hz+hd)) processHoleWall(hx+hw, zArr[j], hx+hw, zArr[j+1]); }
+                    if (hz+hd < maxZ) { for(let i=xArr.length-1; i>0; i--) if(isInside(xArr[i-1], hx, hx+hw) && isInside(xArr[i], hx, hx+hw)) processHoleWall(xArr[i], hz+hd, xArr[i-1], hz+hd); }
+                    if (hx > minX) { for(let j=zArr.length-1; j>0; j--) if(isInside(zArr[j-1], hz, hz+hd) && isInside(zArr[j], hz, hz+hd)) processHoleWall(hx, zArr[j], hx, zArr[j-1]); }
                 }
 
-                const rGeo = new THREE.BufferGeometry();
-                rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(roofVerts), 3));
-                rGeo.setIndex(roofInds);
-                rGeo.computeVertexNormals();
-                const rMesh = new THREE.Mesh(rGeo, roofMat);
-                const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
-                roofGroup.add(rMesh, rLine);
+                // --- 最後にそれぞれのメッシュを生成して結合 ---
+                const createMesh = (verts, inds, mat) => {
+                    if (verts.length === 0) return;
+                    const geo = new THREE.BufferGeometry();
+                    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+                    geo.setIndex(inds);
+                    geo.computeVertexNormals();
+                    const mesh = new THREE.Mesh(geo, mat);
+                    const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+                    roofGroup.add(mesh, line);
+                };
 
-                if (wallVerts.length > 0) {
-                    const wGeo = new THREE.BufferGeometry();
-                    wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts), 3));
-                    wGeo.setIndex(wallInds);
-                    wGeo.computeVertexNormals();
-                    const wMesh = new THREE.Mesh(wGeo, wallMat);
-                    const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
-                    roofGroup.add(wMesh, wLine);
-                }
+                // 下層（白）を生成
+                createMesh(lowerParams.verts, lowerParams.inds, wallMat);
+                // 上層（黒）を生成
+                createMesh(upperParams.verts, upperParams.inds, roofMat);
+                // 壁・妻壁部分（白）を生成
+                createMesh(wallVerts, wallInds, wallMat);
             }
             
             // タグ付け (プッシュプルのための isRoof を付与)
@@ -1300,7 +1437,121 @@ export const ModelingEngine = {
                 }
             });
             group.add(roofGroup);
+        }      
+        return group;
+    },
+    // modelingEngine.js の一番下（return group; の直前など）に新しいメソッドとして追加
+    buildSodeWalls: function(b, baseY, materials) {
+        const group = new THREE.Group();
+        const { wallMat, edgeMat } = materials;
+
+        if (b.sodeWalls) {
+            const t_sode = 100; // 厚み固定100mm
+
+            for (let dir in b.sodeWalls) {
+                const mode = b.sodeWalls[dir];
+                const p = b.sodeParams[dir];
+                if (!p) continue;
+
+                const sodeGroup = new THREE.Group();
+                sodeGroup.position.set(b.x, baseY, b.z);
+
+                // 面の向きに応じた回転と壁面中心からのオフセット距離
+                let rotY = 0, offsetZ = 0, faceWidth = 0;
+                if (dir === 'pz') { rotY = 0;          offsetZ = b.d / 2; faceWidth = b.w; }
+                else if (dir === 'nz') { rotY = Math.PI;     offsetZ = b.d / 2; faceWidth = b.w; }
+                else if (dir === 'px') { rotY = Math.PI / 2; offsetZ = b.w / 2; faceWidth = b.d; }
+                else if (dir === 'nx') { rotY = -Math.PI / 2;offsetZ = b.w / 2; faceWidth = b.d; }
+
+                const addWallSegment = (isLeft) => {
+                    const param = isLeft ? p.left : p.right;
+                    const h_sode = Math.max(100, b.h - param.topGap);
+                    const d_sode = param.depth;
+
+                    const geo = new THREE.BoxGeometry(t_sode, h_sode, d_sode);
+                    
+                    // 左右に応じたX位置のオフセット（壁の内側に収まるように配置）
+                    const directionSign = isLeft ? -1 : 1;
+                    const posX = (faceWidth / 2 - t_sode / 2) * directionSign;
+                    const posY = h_sode / 2;
+                    const posZ = offsetZ + d_sode / 2;
+
+                    const mesh = new THREE.Mesh(geo, wallMat);
+                    mesh.position.set(posX, posY, posZ);
+                    const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+                    line.position.copy(mesh.position);
+
+                    sodeGroup.add(mesh, line);
+                };
+
+                // モードに応じて左右を描画
+                if (mode === 'both' || mode === 'left')  addWallSegment(true);
+                if (mode === 'both' || mode === 'right') addWallSegment(false);
+
+                sodeGroup.rotation.y = rotY;
+
+                sodeGroup.traverse(child => {
+                    if (child.isMesh || child.isLineSegments) {
+                        child.userData = { isDeco: true, type: 'sodeWall', dir: dir, id: b.id };
+                    }
+                });
+
+                group.add(sodeGroup);
+            }
+        }
+        return group;
+    },
+    
+    // ★追加：垂れ壁の生成処理
+    buildTareWalls: function(b, baseY, materials) {
+        const group = new THREE.Group();
+        const { wallMat, edgeMat } = materials;
+
+        if (b.tareWalls) {
+            const t_tare = 100; // 厚み固定100mm
+
+            for (let dir in b.tareWalls) {
+                const p = b.tareParams[dir];
+                if (!p) continue;
+
+                const tareGroup = new THREE.Group();
+                // 配置の起点は、対象ブロックの底面（baseY）
+                tareGroup.position.set(b.x, baseY, b.z);
+
+                // 面の向きに応じた回転と壁面中心からのオフセット距離
+                let rotY = 0, offsetZ = 0, faceWidth = 0;
+                if (dir === 'pz') { rotY = 0;          offsetZ = b.d / 2; faceWidth = b.w; }
+                else if (dir === 'nz') { rotY = Math.PI;     offsetZ = b.d / 2; faceWidth = b.w; }
+                else if (dir === 'px') { rotY = Math.PI / 2; offsetZ = b.w / 2; faceWidth = b.d; }
+                else if (dir === 'nx') { rotY = -Math.PI / 2;offsetZ = b.w / 2; faceWidth = b.d; }
+
+                const h_tare = p.height; // スライダーで指定された下がり幅
+                const geo = new THREE.BoxGeometry(faceWidth, h_tare, t_tare);
+                
+                // Y位置: 底面（0）から下に向かって伸びるため -h_tare/2
+                // Z位置: 壁の表面（offsetZ）から外側へ厚み分飛び出すように配置
+                const posX = 0;
+                const posY = -h_tare / 2;
+                const posZ = offsetZ - t_tare / 2; // ★「+」から「-」に変更
+
+                const mesh = new THREE.Mesh(geo, wallMat);
+                mesh.position.set(posX, posY, posZ);
+                const line = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+                line.position.copy(mesh.position);
+
+                tareGroup.add(mesh, line);
+                tareGroup.rotation.y = rotY;
+
+                tareGroup.traverse(child => {
+                    if (child.isMesh || child.isLineSegments) {
+                        child.userData = { isDeco: true, type: 'tareWall', dir: dir, id: b.id };
+                    }
+                });
+
+                group.add(tareGroup);
+            }
         }
         return group;
     }
+    
 };

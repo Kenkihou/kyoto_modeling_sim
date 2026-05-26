@@ -174,8 +174,8 @@ export const AppState = {
                 if (!b.roof.params) b.roof.params = {};
 
                 const defaultRoofParams = {
-                    '切妻': { eaves: 600, keraba: 300, slope: 4, rotate90: false, ridgeOffset: 0, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
-                    '寄棟': { eaves: 600, keraba: 600, slope: 4, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
+                    '切妻': { eaves_l: 600, eaves_r: 600, keraba_l: 300, keraba_r: 300, slope: 4, rotate90: false, ridgeOffset: 0, flatEaves: false, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
+                    '寄棟': { eaves: 600, keraba: 600, slope: 4, flatEaves: false, cutout: { active: false, x: 0, z: 0, w: 1000, d: 1000 } },
                     'パラペット修景': { pHeight: 300, slope: 3, out_px: 600, in_px: 400 },
                     '陸屋根': { pHeight: 300 }
                 };
@@ -198,6 +198,7 @@ export const AppState = {
             if (b.pilasters && !b.pilasterParams) b.pilasterParams = {};
             if (b.windows && !b.windowParams) b.windowParams = {};
             if (b.doors && !b.doorParams) b.doorParams = {};
+            if (b.sodeWalls && !b.sodeParams) b.sodeParams = {};
 
             return b;
         });

@@ -128,6 +128,15 @@ function rebuildMeshes() {
         const doorMaterials = { edgeMat: edgeMat };
         const doorsGroup = ModelingEngine.buildDoors(b, baseY, doorMaterials);
         houseGroup.add(doorsGroup);
+
+        const sodeMaterials = { wallMat: wallMat, edgeMat: edgeMat };
+        const sodeWallsGroup = ModelingEngine.buildSodeWalls(b, baseY, sodeMaterials);
+        houseGroup.add(sodeWallsGroup);
+
+        const tareMaterials = { wallMat: wallMat, edgeMat: edgeMat };
+        const tareWallsGroup = ModelingEngine.buildTareWalls(b, baseY, tareMaterials);
+        houseGroup.add(tareWallsGroup);
+
     });
 
     if (window.renderAllViews) window.renderAllViews();
