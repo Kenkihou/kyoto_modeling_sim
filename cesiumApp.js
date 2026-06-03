@@ -118,31 +118,36 @@ export async function initCesium(containerId, token, location = KYOTO_STATION) {
         viewer.scene.primitives.add(plateauTileset);
 
         // ==========================================
-        // 2. ★追加：Google Photorealistic 3D Tiles の読み込み
+        // 2. ★修正：Google 3D Tiles の読み込みを独立した try-catch で囲む
         // ==========================================
-        googleTileset = await Cesium.createGooglePhotorealistic3DTileset();
-        viewer.scene.primitives.add(googleTileset);
-        
-        // 初期状態はPLATEAUを見せるため、Google側は非表示にしておく
-        googleTileset.show = false; 
+        try {
+            googleTileset = await Cesium.createGooglePhotorealistic3DTileset();
+            viewer.scene.primitives.add(googleTileset);
+            googleTileset.show = false; // 初期状態は非表示
+        } catch (googleErr) {
+            console.warn("Google 3D Tiles の読み込みに失敗しました。PLATEAUモードで続行します。:", googleErr);
+            googleTileset = null;
+        }
 
         // ==========================================
-        // 3. ★追加：切り替えボタンのイベント設定
+        // 3. 切り替えボタンのイベント設定（以下は必ず実行される）
         // ==========================================
         const toggleBtn = document.getElementById('btn-toggle-tiles');
         if (toggleBtn) {
-            // イベントの多重登録を防ぐために一度古いイベントを消す（クローン置換）
             const newBtn = toggleBtn.cloneNode(true);
             toggleBtn.parentNode.replaceChild(newBtn, toggleBtn);
 
             newBtn.addEventListener('click', () => {
-                isGoogleMode = !isGoogleMode;
+                // Googleタイルがエラーで存在しない場合はアラートを出して防ぐ
+                if (!googleTileset) {
+                    alert('現在Google 3D Tilesは利用できません（API制限等のエラー）。PLATEAUを表示します。');
+                    return;
+                }
                 
-                // 表示・非表示を切り替え
+                isGoogleMode = !isGoogleMode;
                 if (googleTileset) googleTileset.show = isGoogleMode;
                 if (plateauTileset) plateauTileset.show = !isGoogleMode;
 
-                // ボタンの見た目とテキストを更新
                 if (isGoogleMode) {
                     newBtn.innerHTML = '🗺️ 背景切替: Google 3D (現在)';
                     newBtn.style.background = '#4285F4';
@@ -155,18 +160,19 @@ export async function initCesium(containerId, token, location = KYOTO_STATION) {
             });
         }
 
-        // 2D地図で選んだ location にカメラを向ける
         viewer.camera.setView({
             destination: Cesium.Cartesian3.fromDegrees(location.lng, location.lat - 0.003, 300),
             orientation: { heading: 0, pitch: Cesium.Math.toRadians(-35), roll: 0 }
         });
 
+        // ★Googleエラー時でも、ここは確実に実行されるようになる
         setupKeyListeners();
         setupDragAndDrop();
         setupPegman();
         setupTransparencyControl();
+        
     } catch (e) {
-        console.error("Cesium初期化エラー:", e);
+        console.error("Cesiumの致命的な初期化エラー:", e);
     }
 }
 
