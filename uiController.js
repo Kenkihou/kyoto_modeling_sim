@@ -13,7 +13,7 @@ let setTool = () => {};
 const defaultRoofParams = {
     '切妻': { eaves_l: 600, eaves_r: 600, keraba_l: 300, keraba_r: 300, slope: 4, rotate90: false, ridgeOffset: 0 },
     '寄棟': { eaves: 600, keraba: 600, slope: 4 },
-    'パラペット修景': { pHeight: 300, slope: 3, out_px: 600, in_px: 400 },
+    'パラペット修景': { pHeight: 300, slope: 3, out_px: 600, in_px: 400, flatEaves: false },
     '陸屋根': { pHeight: 300 }
 };
 
@@ -94,23 +94,13 @@ export const UIController = {
                 currentGUI.add(params, 'keraba_r', 0, 2000, 100).name(labelKerabaR).onChange(onChange).onFinishChange(onFinishChange);
                 
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
-                const ridgeCtrl = currentGUI.add(params, 'ridgeOffset', -50, 50, 1).name('棟の位置 (%)');
-                ridgeCtrl.onChange((val) => {
-                    if (val > -5 && val < 5 && val !== 0) {
-                        params.ridgeOffset = 0;
-                        ridgeCtrl.updateDisplay();
-                    }
-                    onChange();
-                }).onFinishChange(onFinishChange);
+                // ★修正：大屋根も%ではなく建物の限界値(mm)に合わせたスライダーに変更
+                const maxOffset = isRot ? (b.d / 2) : (b.w / 2);
+                currentGUI.add(params, 'ridgeOffset', -maxOffset, maxOffset, 50).name('棟の位置 (mm)').onChange(onChange).onFinishChange(onFinishChange);
             } else if (type === '寄棟') {
                 currentGUI.add(params, 'eaves', 0, 2000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
                 currentGUI.add(params, 'slope', 0, 10, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
             } 
-            // ★追加：水平軒裏の切り替えトグル
-            if (type === '切妻' || type === '寄棟') {
-                if (params.flatEaves === undefined) params.flatEaves = false;
-                currentGUI.add(params, 'flatEaves').name('水平軒裏にする').onChange(onChange).onFinishChange(onFinishChange);
-            }
 
             // ★追加：切り欠きのGUI設定（切妻・寄棟 共通）
             if (type === '切妻' || type === '寄棟') {
@@ -150,12 +140,67 @@ export const UIController = {
             }
 
             if (type === 'パラペット修景') {
-                currentGUI.add(params, 'pHeight', 150, 1000, 50).name('パラペット高さ (mm)').onChange(onChange).onFinishChange(onFinishChange);
-                currentGUI.add(params, 'slope', 0, 10, 0.5).name('笠木勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
+                // 古いセーブデータとの互換性
+                if (params.ridge_dist === undefined) params.ridge_dist = params.in_px / 2;
+
+                const maxIn_geom = Math.floor(Math.min(b.w / 2, b.d / 2) / 50) * 50; 
+                
+                // コントローラーを変数に格納（後で連動させるため）
+                const pHeightCtrl = currentGUI.add(params, 'pHeight', 150, 1000, 50).name('パラペット高さ (mm)');
+                const slopeCtrl = currentGUI.add(params, 'slope', 0, 10, 0.5).name('笠木勾配 (寸)');
                 currentGUI.add(params, 'out_px', 0, 2000, 100).name('外方向の出幅 (mm)').onChange(onChange).onFinishChange(onFinishChange);
-                const maxIn = Math.floor(Math.min(b.w / 2, b.d / 2) / 50) * 50; 
-                if (params.in_px > maxIn) params.in_px = maxIn;
-                currentGUI.add(params, 'in_px', 0, maxIn, 50).name('内方向の寸法 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+                
+                const inCtrl = currentGUI.add(params, 'in_px', 0, maxIn_geom, 50).name('内方向の総寸法 (mm)');
+                const ridgeCtrl = currentGUI.add(params, 'ridge_dist', 0, maxIn_geom, 50).name('棟の水平位置 (mm)');
+
+                // ★追加：床に到達する限界値を動的に計算し、スライダーの最大値を制限する関数
+                const updateLimits = () => {
+                    const rSlope = params.slope / 10;
+                    let floorHitInPx = maxIn_geom;
+                    
+                    if (rSlope > 0) {
+                        // 床(y=0)に到達する最大の内方向寸法を数式から逆算
+                        floorHitInPx = (2 * params.ridge_dist) + (params.pHeight / rSlope);
+                    }
+                    
+                    // 建物の中心(maxIn_geom)か、床に当たる寸法か、どちらか小さい方を限界値とする
+                    const dynamicMaxIn = Math.min(maxIn_geom, Math.floor(floorHitInPx / 50) * 50);
+                    
+                    // 内方向の寸法の「最大値」を更新し、はみ出ていればツマミを限界値まで押し戻す
+                    inCtrl.max(dynamicMaxIn);
+                    if (params.in_px > dynamicMaxIn) {
+                        inCtrl.setValue(dynamicMaxIn);
+                    }
+
+                    // 棟の位置の「最大値」は、常に内方向の総寸法までとする
+                    ridgeCtrl.max(params.in_px);
+                    if (params.ridge_dist > params.in_px) {
+                        ridgeCtrl.setValue(params.in_px);
+                    }
+                };
+
+                // 各スライダーが動くたびに限界値を再計算する
+                pHeightCtrl.onChange((val) => { updateLimits(); onChange(); }).onFinishChange(onFinishChange);
+                slopeCtrl.onChange((val) => { updateLimits(); onChange(); }).onFinishChange(onFinishChange);
+
+                inCtrl.onChange((val) => {
+                    ridgeCtrl.max(val);
+                    if (params.ridge_dist > val) {
+                        ridgeCtrl.setValue(val);
+                    } else {
+                        onChange();
+                    }
+                }).onFinishChange(onFinishChange);
+                
+                ridgeCtrl.onChange((val) => {
+                    updateLimits();
+                    onChange();
+                }).onFinishChange(onFinishChange);
+                
+                if (params.flatEaves === undefined) params.flatEaves = false;
+                currentGUI.add(params, 'flatEaves').name('水平軒裏にする').onChange(onChange).onFinishChange(onFinishChange);
+                // メニューを開いた瞬間に最新の制限を適用
+                updateLimits();
             } else if (type === '陸屋根') {
                 currentGUI.add(params, 'pHeight', 150, 1000, 50).name('パラペット高さ (mm)').onChange(onChange).onFinishChange(onFinishChange);
             }
@@ -169,14 +214,59 @@ export const UIController = {
             currentGUI.domElement.style.right = '10px';
 
             const lr = b.lowerRoof;
+            const type = lr.type || '平入り/寄棟';
+
             const resetObj = {
                 reset: () => {
-                    b.lowerRoof.eaves = 600; b.lowerRoof.keraba = 300; b.lowerRoof.slope = 4;
+                    if (type === '妻入り/切妻1' || type === '切妻2') {
+                        b.lowerRoof.eaves_l = 600; b.lowerRoof.eaves_r = 600;
+                        b.lowerRoof.keraba_l = 300; b.lowerRoof.keraba_r = 300;
+                        b.lowerRoof.ridgeOffset = 0;
+                    } else {
+                        b.lowerRoof.eaves = 600; b.lowerRoof.keraba = 300;
+                    }
+                    b.lowerRoof.slope = 4;
                     onFinishChange(); rebuildMeshes(); this.updateGUI(b, 'lowerRoof'); 
                 }
             };
-            currentGUI.add(lr, 'eaves', 0, 1000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
-            currentGUI.add(lr, 'keraba', 0, 600, 100).name('ケラバ (mm)').onChange(onChange).onFinishChange(onFinishChange);
+
+            // ★追加：切妻系（妻入り）のときは大屋根と同様に左右・前後の個別調整と棟のズレを可能にする
+            if (type === '妻入り/切妻1' || type === '切妻2') {
+                // 安全対策：パラメータが未定義の場合は初期値を代入
+                if (lr.eaves_l === undefined) lr.eaves_l = lr.eaves !== undefined ? lr.eaves : 600;
+                if (lr.eaves_r === undefined) lr.eaves_r = lr.eaves !== undefined ? lr.eaves : 600;
+                if (lr.keraba_l === undefined) lr.keraba_l = lr.keraba !== undefined ? lr.keraba : 300;
+                if (lr.keraba_r === undefined) lr.keraba_r = lr.keraba !== undefined ? lr.keraba : 300;
+                if (lr.ridgeOffset === undefined) lr.ridgeOffset = 0;
+
+                // 3D側の棟の反転ロジック(isGableX)に合わせてラベル名を分かりやすく動的に変更
+                const isCorner = (lr.out_nx > 0 || lr.out_px > 0) && (lr.out_nz > 0 || lr.out_pz > 0);
+                let isGableX = false;
+                if (type === '切妻2') isGableX = false;
+                else if (isCorner) isGableX = true;
+                else if (lr.out_nz > 0 || lr.out_pz > 0) isGableX = false;
+                else isGableX = true;
+
+                const labelEavesL = isGableX ? '軒の出 (左) (mm)'   : '軒の出 (手前) (mm)';
+                const labelEavesR = isGableX ? '軒の出 (右) (mm)'   : '軒の出 (奥) (mm)';
+                const labelKerabaL = isGableX ? 'ケラバ (手前) (mm)' : 'ケラバ (左) (mm)';
+                const labelKerabaR = isGableX ? 'ケラバ (奥) (mm)'   : 'ケラバ (右) (mm)';
+
+                currentGUI.add(lr, 'eaves_l', 0, 2000, 50).name(labelEavesL).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(lr, 'eaves_r', 0, 2000, 50).name(labelEavesR).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(lr, 'keraba_l', 0, 2000, 50).name(labelKerabaL).onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(lr, 'keraba_r', 0, 2000, 50).name(labelKerabaR).onChange(onChange).onFinishChange(onFinishChange);
+                
+                // ★修正：棟の位置（ズレ）の限界値を、対象ブロックの壁の端（間口/奥行の半分）までに制限する
+                const maxOffset = isGableX ? (b.d / 2) : (b.w / 2);
+                currentGUI.add(lr, 'ridgeOffset', -maxOffset, maxOffset, 50).name('棟の位置 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+            } else {
+                // 従来の寄棟・平入りタイプの表示
+                currentGUI.add(lr, 'eaves', 0, 1000, 100).name('軒の出 (mm)').onChange(onChange).onFinishChange(onFinishChange);
+                currentGUI.add(lr, 'keraba', 0, 600, 100).name('ケラバ (mm)').onChange(onChange).onFinishChange(onFinishChange);
+            }
+
+            // 屋根勾配とリセットボタンは全タイプ共通
             currentGUI.add(lr, 'slope', 3, 4.5, 0.5).name('屋根勾配 (寸)').onChange(onChange).onFinishChange(onFinishChange);
             currentGUI.add(resetObj, 'reset').name('↺ デフォルトに戻す');
         }
@@ -504,8 +594,27 @@ export const UIController = {
             } else {
                 const btnLowerRoof = document.createElement('div');
                 btnLowerRoof.className = 'float-btn';
-                btnLowerRoof.innerText = block.lowerRoof ? '下屋を削除' : '下屋を追加';
-                if (block.lowerRoof) btnLowerRoof.classList.add('danger');
+                if (!block.lowerRoof) {
+                    btnLowerRoof.innerText = '下屋を追加';
+                } else {
+                    btnLowerRoof.classList.add('warning');
+                    const isCorner = (block.lowerRoof.out_nx > 0 || block.lowerRoof.out_px > 0) && (block.lowerRoof.out_nz > 0 || block.lowerRoof.out_pz > 0);
+                    const t = block.lowerRoof.type || '平入り/寄棟';
+                    
+                    if (t === '平入り/寄棟') {
+                        btnLowerRoof.innerText = isCorner ? '下屋変更 (→ 切妻1)' : '下屋変更 (→ 妻入り)';
+                    } else if (t === '妻入り/切妻1') {
+                        btnLowerRoof.innerText = isCorner ? '下屋変更 (→ 切妻2)' : '下屋を削除';
+                        if (!isCorner) {
+                            btnLowerRoof.classList.remove('warning');
+                            btnLowerRoof.classList.add('danger');
+                        }
+                    } else if (t === '切妻2') {
+                        btnLowerRoof.innerText = '下屋を削除';
+                        btnLowerRoof.classList.remove('warning');
+                        btnLowerRoof.classList.add('danger');
+                    }
+                }
                 btnLowerRoof.onclick = () => { window.toggleLowerRoof(); };
                 menu.appendChild(btnLowerRoof);
             }
@@ -637,8 +746,26 @@ export const UIController = {
         });
 
         window.toggleLowerRoof = () => executeAction((b) => {
-            if (b.lowerRoof) { delete b.lowerRoof; this.clearGUI(); } 
-            else { b.lowerRoof = { eaves: 600, slope: 4, thick: 150, keraba: 300, out_nx: 0, out_px: 0, out_nz: 0, out_pz: 0 }; }
+            const isCorner = b.lowerRoof ? ((b.lowerRoof.out_nx > 0 || b.lowerRoof.out_px > 0) && (b.lowerRoof.out_nz > 0 || b.lowerRoof.out_pz > 0)) : false;
+            
+            if (!b.lowerRoof) { 
+                b.lowerRoof = { type: '平入り/寄棟', eaves: 600, slope: 4, thick: 150, keraba: 300, out_nx: 0, out_px: 0, out_nz: 0, out_pz: 0 }; 
+            } else if (b.lowerRoof.type === '平入り/寄棟') {
+                b.lowerRoof.type = '妻入り/切妻1';
+                // ★追加：切妻専用のパラメータを現在の値から引き継いで初期化
+                b.lowerRoof.eaves_l = b.lowerRoof.eaves; b.lowerRoof.eaves_r = b.lowerRoof.eaves;
+                b.lowerRoof.keraba_l = b.lowerRoof.keraba; b.lowerRoof.keraba_r = b.lowerRoof.keraba;
+                b.lowerRoof.ridgeOffset = 0;
+            } else if (b.lowerRoof.type === '妻入り/切妻1') {
+                // 角がある（隣り合う）場合は3つ目のパターンへ、そうでない場合は削除へ
+                if (isCorner) {
+                    b.lowerRoof.type = '切妻2';
+                } else {
+                    delete b.lowerRoof; this.clearGUI(); 
+                }
+            } else {
+                delete b.lowerRoof; this.clearGUI(); 
+            }
             this.showFloatingMenu(lastMenuX, lastMenuY, b, 'top', null);
             if (b.lowerRoof) this.updateGUI(b, 'lowerRoof'); 
         });

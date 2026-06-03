@@ -609,257 +609,484 @@ export const ModelingEngine = {
                     const H_out_eaves = e_lr * slope_lr;
                     const backDist = 300;       
                     const dropInner = backDist * slope_lr; 
+                    
+                    // ★修正：大屋根と同じ2層構造の厚み設定
+                    const t_lower = 100; // 下層（白）の厚み
+                    const t_upper = 100; // 上層（黒）の厚み
+                    const t1 = t_lower;
+                    const t2 = t_lower + t_upper;
+                    
+                    const type = lr.type || '平入り/寄棟';
 
-                    const e_nx = e_lr * (lr.out_nx / max_out);
-                    const e_px = e_lr * (lr.out_px / max_out);
-                    const e_nz = e_lr * (lr.out_nz / max_out);
-                    const e_pz = e_lr * (lr.out_pz / max_out);
-
-                    const x_wall_L = -w2; const x_wall_R = w2;
-                    const z_wall_B = -d2; const z_wall_F = d2;
-                    const x_in_L = x_wall_L + lr.out_nx; const x_in_R = x_wall_R - lr.out_px;
-                    const z_in_B = z_wall_B + lr.out_nz; const z_in_F = z_wall_F - lr.out_pz;
-                    const x_out_L = x_wall_L - e_nx; const x_out_R = x_wall_R + e_px;
-                    const z_out_B = z_wall_B - e_nz; const z_out_F = z_wall_F + e_pz;
-
-                    const roofVerts = [], roofInds = [];
-                    const wallVerts = [], wallInds = [];
-                    let rIdx = 0, wIdx = 0;
-
-                    const addRoofQuad = (p0, p1, p2, p3) => {
-                        roofVerts.push(...p0, ...p1, ...p2, ...p3);
-                        roofInds.push(rIdx, rIdx+1, rIdx+2, rIdx, rIdx+2, rIdx+3);
-                        rIdx += 4;
-                    };
-                    const addWallTri = (p0, p1, p2) => {
-                        wallVerts.push(...p0, ...p1, ...p2);
-                        wallInds.push(wIdx, wIdx+1, wIdx+2);
-                        wIdx += 3;
-                    };
-
-                    if (lr.out_pz > 0) { 
-                        let x_L_in = x_in_L, x_L_out = x_out_L;
-                        let x_R_in = x_in_R, x_R_out = x_out_R;
-                        if (lr.out_nx === 0) { x_L_in = x_wall_L - k_lr; x_L_out = x_wall_L - k_lr; }
-                        if (lr.out_px === 0) { x_R_in = x_wall_R + k_lr; x_R_out = x_wall_R + k_lr; }
+                    if (type === '妻入り/切妻1' || type === '切妻2') {
+                        // ==== 妻入り・切妻の描画ロジック ====
+                        let isGableX = false;
+                        let isGableZ = false;
+                        const isCorner = (lr.out_nx > 0 || lr.out_px > 0) && (lr.out_nz > 0 || lr.out_pz > 0);
                         
-                        const pIT_L = [x_L_in, H_max+t, z_in_F], pIT_R = [x_R_in, H_max+t, z_in_F];
-                        const pIB_L = [x_L_in, H_max, z_in_F],   pIB_R = [x_R_in, H_max, z_in_F];
-                        const pOT_L = [x_L_out, -H_out_eaves+t, z_out_F], pOT_R = [x_R_out, -H_out_eaves+t, z_out_F];
-                        const pOB_L = [x_L_out, -H_out_eaves, z_out_F],   pOB_R = [x_R_out, -H_out_eaves, z_out_F];
-
-                        addRoofQuad(pIT_L, pIT_R, pOT_R, pOT_L); 
-                        addRoofQuad(pIB_R, pIB_L, pOB_L, pOB_R); 
-                        addRoofQuad(pOT_R, pOT_L, pOB_L, pOB_R); 
-
-                        if (lr.out_nx === 0) { 
-                            if (k_lr > 0) {
-                                const pBT_L = [x_wall_L - k_lr, H_max-dropInner+t, z_in_F - backDist];
-                                const pBT_R = [x_wall_L, H_max-dropInner+t, z_in_F - backDist];
-                                const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_F - backDist];
-                                const pBB_R = [x_wall_L, H_max-dropInner, z_in_F - backDist];
-                                const piT_R = [x_wall_L, H_max+t, z_in_F];
-                                const piB_R = [x_wall_L, H_max, z_in_F];
-                                addRoofQuad(pBT_L, pBT_R, piT_R, pIT_L); 
-                                addRoofQuad(piB_R, pIB_L, pBB_L, pBB_R); 
-                                addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R); 
-                                addRoofQuad(pBT_L, pBB_L, pIB_L, pIT_L); 
-                            }
-                            addRoofQuad(pIT_L, pIB_L, pOB_L, pOT_L); 
-                            addWallTri([x_wall_L, H_max, z_in_F], [x_wall_L, 0, z_in_F], [x_wall_L, 0, z_wall_F]);
+                        if (type === '切妻2') {
+                            isGableZ = true;
+                        } else {
+                            if (isCorner) isGableX = true;
+                            else if (lr.out_nz > 0 || lr.out_pz > 0) isGableZ = true;
+                            else isGableX = true;
                         }
-                        if (lr.out_px === 0) { 
-                            if (k_lr > 0) {
-                                const pBT_L = [x_wall_R, H_max-dropInner+t, z_in_F - backDist];
-                                const pBT_R = [x_wall_R + k_lr, H_max-dropInner+t, z_in_F - backDist];
-                                const pBB_L = [x_wall_R, H_max-dropInner, z_in_F - backDist];
-                                const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_F - backDist];
-                                const piT_L = [x_wall_R, H_max+t, z_in_F];
-                                const piB_L = [x_wall_R, H_max, z_in_F];
-                                addRoofQuad(pBT_L, pBT_R, pIT_R, piT_L);
-                                addRoofQuad(pIB_R, piB_L, pBB_L, pBB_R);
-                                addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R);
-                                addRoofQuad(pIT_R, pIB_R, pBB_R, pBT_R); 
-                            }
-                            addRoofQuad(pOT_R, pOB_R, pIB_R, pIT_R); 
-                            addWallTri([x_wall_R, H_max, z_in_F], [x_wall_R, 0, z_wall_F], [x_wall_R, 0, z_in_F]);
+
+                        const el = lr.eaves_l !== undefined ? lr.eaves_l : e_lr;
+                        const er = lr.eaves_r !== undefined ? lr.eaves_r : e_lr;
+                        const kl = lr.keraba_l !== undefined ? lr.keraba_l : k_lr;
+                        const kr = lr.keraba_r !== undefined ? lr.keraba_r : k_lr;
+                        const rOffset = lr.ridgeOffset || 0; 
+
+                        let e_nx_val = 0, e_px_val = 0, e_nz_val = 0, e_pz_val = 0;
+                        if (isGableX) { 
+                            e_nz_val = el; e_pz_val = er;
+                            e_nx_val = kl; e_px_val = kr;
+                        } else {        
+                            e_nx_val = el; e_px_val = er;
+                            e_nz_val = kl; e_pz_val = kr;
                         }
-                    }
 
-                    if (lr.out_nz > 0) {
-                        let x_inR = x_in_R, x_outR = x_out_R;
-                        let x_inL = x_in_L, x_outL = x_out_L;
-                        if (lr.out_px === 0) { x_inR = x_wall_R + k_lr; x_outR = x_wall_R + k_lr; }
-                        if (lr.out_nx === 0) { x_inL = x_wall_L - k_lr; x_outL = x_wall_L - k_lr; }
+                        const min_lowerX = -w2; const max_lowerX =  w2;
+                        const min_lowerZ = -d2; const max_lowerZ =  d2;
+                        const min_upperX = -w2 + lr.out_nx; const max_upperX =  w2 - lr.out_px;
+                        const min_upperZ = -d2 + lr.out_nz; const max_upperZ =  d2 - lr.out_pz;
 
-                        const pIT_R = [x_inR, H_max+t, z_in_B], pIT_L = [x_inL, H_max+t, z_in_B];
-                        const pIB_R = [x_inR, H_max, z_in_B],   pIB_L = [x_inL, H_max, z_in_B];
-                        const pOT_R = [x_outR, -H_out_eaves+t, z_out_B], pOT_L = [x_outL, -H_out_eaves+t, z_out_B];
-                        const pOB_R = [x_out_R, -H_out_eaves, z_out_B],   pOB_L = [x_outL, -H_out_eaves, z_out_B];
+                        const minX = min_lowerX - e_nx_val;
+                        const maxX = max_lowerX + e_px_val;
+                        const minZ = min_lowerZ - e_nz_val;
+                        const maxZ = max_lowerZ + e_pz_val;
 
-                        addRoofQuad(pIT_R, pIT_L, pOT_L, pOT_R);
-                        addRoofQuad(pIB_L, pIB_R, pOB_R, pOB_L);
-                        addRoofQuad(pOT_L, pOT_R, pOB_R, pOB_L);
-
-                        if (lr.out_px === 0) {
-                            if (k_lr > 0) {
-                                const pBT_R = [x_wall_R + k_lr, H_max-dropInner+t, z_in_B + backDist];
-                                const pBT_L = [x_wall_R, H_max-dropInner+t, z_in_B + backDist];
-                                const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_B + backDist];
-                                const pBB_L = [x_wall_R, H_max-dropInner, z_in_B + backDist];
-                                const piT_L = [x_wall_R, H_max+t, z_in_B];
-                                const piB_L = [x_wall_R, H_max, z_in_B];
-                                addRoofQuad(pBT_R, pBT_L, piT_L, pIT_R);
-                                addRoofQuad(piB_L, pIB_R, pBB_R, pBB_L);
-                                addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
-                                addRoofQuad(pBT_R, pBB_R, pIB_R, pIT_R); 
+                        const getRY = (x, z) => {
+                            if (isGableX) {
+                                const peakHeight = (d2 + Math.abs(rOffset)) * slope_lr;
+                                const dist = z - rOffset;
+                                if (rOffset >= d2 - 0.01 && dist > 0) return peakHeight + dist * slope_lr;
+                                if (rOffset <= -d2 + 0.01 && dist < 0) return peakHeight + Math.abs(dist) * slope_lr;
+                                return peakHeight - Math.abs(dist) * slope_lr;
                             }
-                            addRoofQuad(pIT_R, pIB_R, pOB_R, pOT_R); 
-                            addWallTri([x_wall_R, H_max, z_in_B], [x_wall_R, 0, z_in_B], [x_wall_R, 0, z_wall_B]);
-                        }
-                        if (lr.out_nx === 0) {
-                            if (k_lr > 0) {
-                                const pBT_R = [x_wall_L, H_max-dropInner+t, z_in_B + backDist];
-                                const pBT_L = [x_wall_L - k_lr, H_max-dropInner+t, z_in_B + backDist];
-                                const pBB_R = [x_wall_L, H_max-dropInner, z_in_B + backDist];
-                                const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_B + backDist];
-                                const piT_R = [x_wall_L, H_max+t, z_in_B];
-                                const piB_R = [x_wall_L, H_max, z_in_B];
-                                addRoofQuad(pBT_R, pBT_L, pIT_L, piT_R);
-                                addRoofQuad(b.lowerRoof ? pIB_L : [], piB_R, pBB_R, pBB_L); 
-                                addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
-                                addRoofQuad(pIT_L, pIB_L, pBB_L, pBT_L); 
+                            if (isGableZ) {
+                                const peakHeight = (w2 + Math.abs(rOffset)) * slope_lr;
+                                const dist = x - rOffset;
+                                if (rOffset >= w2 - 0.01 && dist > 0) return peakHeight + dist * slope_lr;
+                                if (rOffset <= -w2 + 0.01 && dist < 0) return peakHeight + Math.abs(dist) * slope_lr;
+                                return peakHeight - Math.abs(dist) * slope_lr;
                             }
-                            addRoofQuad(pOT_L, pOB_L, pIB_L, pIT_L); 
-                            addWallTri([x_in_L, H_max, z_in_B], [x_wall_L, 0, z_wall_B], [x_in_L, 0, z_in_B]);
-                        }
-                    }
+                            return 0;
+                        };
 
-                    if (lr.out_px > 0) {
-                        let z_inB = z_in_B, z_outB = z_out_B; 
-                        let z_inF = z_in_F, z_outF = z_out_F; 
-                        if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
-                        if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
+                        let xArr = [min_upperX, max_upperX, min_lowerX, max_lowerX, minX, maxX];
+                        let zArr = [min_upperZ, max_upperZ, min_lowerZ, max_lowerZ, minZ, maxZ];
+                        if (isGableX) zArr.push(rOffset); 
+                        if (isGableZ) xArr.push(rOffset);
 
-                        const pIT_B = [x_in_R, H_max+t, z_inB], pIT_F = [x_in_R, H_max+t, z_inF];
-                        const pIB_B = [x_in_R, H_max, z_inB],   pIB_F = [x_in_R, H_max, z_inF];
-                        const pOT_B = [x_out_R, -H_out_eaves+t, z_outB], pOT_F = [x_out_R, -H_out_eaves+t, z_outF];
-                        const pOB_B = [x_out_R, -H_out_eaves, z_outB],   pOB_F = [x_out_R, -H_out_eaves, z_outF];
+                        xArr = [...new Set(xArr)].sort((a,b)=>a-b);
+                        zArr = [...new Set(zArr)].sort((a,b)=>a-b);
 
-                        addRoofQuad(pIT_B, pIT_F, pOT_F, pOT_B);
-                        addRoofQuad(pIB_F, pIB_B, pOB_B, pOB_F);
-                        addRoofQuad(pOT_F, pOT_B, pOB_B, pOB_F);
+                        const hasCell = (cx, cz) => {
+                            if (cx > min_upperX + 0.01 && cx < max_upperX - 0.01 && 
+                                cz > min_upperZ + 0.01 && cz < max_upperZ - 0.01) return false;
+                            
+                            const in_px = lr.out_px > 0 && cx >= max_upperX - 0.01 && cx <= maxX + 0.01 && 
+                                          cz >= min_lowerZ - e_nz_val - 0.01 && cz <= max_lowerZ + e_pz_val + 0.01;
+                            const in_nx = lr.out_nx > 0 && cx <= min_upperX + 0.01 && cx >= minX - 0.01 && 
+                                          cz >= min_lowerZ - e_nz_val - 0.01 && cz <= max_lowerZ + e_pz_val + 0.01;
+                            const in_pz = lr.out_pz > 0 && cz >= max_upperZ - 0.01 && cz <= maxZ + 0.01 && 
+                                          cx >= min_lowerX - e_nx_val - 0.01 && cx <= max_lowerX + e_px_val + 0.01;
+                            const in_nz = lr.out_nz > 0 && cz <= min_upperZ + 0.01 && cz >= minZ - 0.01 && 
+                                          cx >= min_lowerX - e_nx_val - 0.01 && cx <= max_lowerX + e_px_val + 0.01;
 
-                        if (lr.out_nz === 0) {
-                            if (k_lr > 0) {
-                                const pBT_B = [x_in_R - backDist, H_max-dropInner+t, z_wall_B - k_lr];
-                                const pBT_F = [x_in_R - backDist, H_max-dropInner+t, z_wall_B];
-                                const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_lr];
-                                const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_B];
-                                const piT_F = [x_in_R, H_max+t, z_wall_B];
-                                const piB_F = [x_in_R, H_max, z_wall_B];
-                                addRoofQuad(pBT_B, pBT_F, piT_F, pIT_B);
-                                addRoofQuad(piB_F, pIB_B, pBB_B, pBB_F);
-                                addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
-                                addRoofQuad(pBT_B, pBB_B, pIB_B, pIT_B); 
+                            return in_px || in_nx || in_pz || in_nz;
+                        };
+
+                        // ★修正：下層と上層のメッシュデータを分離
+                        const lowerVerts2 = [], lowerInds2 = [];
+                        const upperVerts2 = [], upperInds2 = [];
+                        const wallVerts2 = [], wallInds2 = [];
+                        let lIdx2 = 0, uIdx2 = 0, wIdx2 = 0;
+
+                        const addQuadLower2 = (p0, p1, p2, p3) => {
+                            lowerVerts2.push(...p0, ...p1, ...p2, ...p3);
+                            lowerInds2.push(lIdx2, lIdx2+1, lIdx2+2, lIdx2, lIdx2+2, lIdx2+3);
+                            lIdx2 += 4;
+                        };
+                        const addQuadUpper2 = (p0, p1, p2, p3) => {
+                            upperVerts2.push(...p0, ...p1, ...p2, ...p3);
+                            upperInds2.push(uIdx2, uIdx2+1, uIdx2+2, uIdx2, uIdx2+2, uIdx2+3);
+                            uIdx2 += 4;
+                        };
+                        const addTriWall2 = (p0, p1, p2) => {
+                            wallVerts2.push(...p0, ...p1, ...p2);
+                            wallInds2.push(wIdx2, wIdx2+1, wIdx2+2);
+                            wIdx2 += 3;
+                        };
+
+                        // 1. 屋根面と小口の2層描画
+                        for (let i = 0; i < xArr.length - 1; i++) {
+                            for (let j = 0; j < zArr.length - 1; j++) {
+                                const x0 = xArr[i], x1 = xArr[i+1];
+                                const z0 = zArr[j], z1 = zArr[j+1];
+                                const cx = (x0+x1)/2, cz = (z0+z1)/2;
+                                if (!hasCell(cx, cz)) continue;
+
+                                const y00 = getRY(x0, z0), y10 = getRY(x1, z0);
+                                const y01 = getRY(x0, z1), y11 = getRY(x1, z1);
+                                
+                                // 上層（黒）の上面と、下層（白）の下面
+                                addQuadUpper2([x1, y10+t2, z0], [x0, y00+t2, z0], [x0, y01+t2, z1], [x1, y11+t2, z1]);
+                                addQuadLower2([x0, y00, z0], [x1, y10, z0], [x1, y11, z1], [x0, y01, z1]);
+
+                                // 小口（側面）の2層描画
+                                const drawSideFace = (px0, pz0, px1, pz1, nCX, nCZ) => {
+                                    if (!hasCell(nCX, nCZ)) {
+                                        const py0 = getRY(px0, pz0), py1 = getRY(px1, pz1);
+                                        addQuadUpper2([px0, py0+t2, pz0], [px1, py1+t2, pz1], [px1, py1+t1, pz1], [px0, py0+t1, pz0]);
+                                        addQuadLower2([px0, py0+t1, pz0], [px1, py1+t1, pz1], [px1, py1, pz1], [px0, py0, pz0]);
+                                    }
+                                };
+                                drawSideFace(x1, z0, x0, z0, cx, z0 - 0.1);
+                                drawSideFace(x0, z1, x1, z1, cx, z1 + 0.1);
+                                drawSideFace(x0, z0, x0, z1, x0 - 0.1, cz);
+                                drawSideFace(x1, z1, x1, z0, x1 + 0.1, cz);
                             }
-                            addRoofQuad(pIT_B, pIB_B, pOB_B, pOT_B); 
-                            addWallTri([x_in_R, H_max, z_wall_B], [x_wall_R, 0, z_wall_B], [x_in_R, 0, z_wall_B]);
                         }
-                        if (lr.out_pz === 0) {
-                            if (k_lr > 0) {
-                                const pBT_B = [x_in_R - backDist, H_max-dropInner+t, z_wall_F];
-                                const pBT_F = [x_in_R - backDist, H_max-dropInner+t, z_wall_F + k_lr];
-                                const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_F];
-                                const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_lr];
-                                const piT_B = [x_in_R, H_max+t, z_wall_F];
-                                const piB_B = [x_in_R, H_max, z_wall_F];
-                                addRoofQuad(pBT_B, pBT_F, pIT_F, piT_B);
-                                addRoofQuad(pIB_F, piB_B, pBB_B, pBB_F);
-                                addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
-                                addRoofQuad(pIT_F, pIB_F, pBB_F, pBT_F); 
+
+                        // 2. 妻壁と側面壁（隙間塞ぎ）の描画
+                        const drawTriWallSegment = (px0, pz0, px1, pz1) => {
+                            const y0 = getRY(px0, pz0);
+                            const y1 = getRY(px1, pz1);
+                            if (y0 < 0.01 && y1 < 0.01) return;
+                            const clampedY0 = Math.max(0, y0);
+                            const clampedY1 = Math.max(0, y1);
+                            addTriWall2([px0, 0, pz0], [px1, 0, pz1], [px1, clampedY1, pz1]);
+                            addTriWall2([px0, 0, pz0], [px1, clampedY1, pz1], [px0, clampedY0, pz0]);
+                        };
+                        const safeDrawTriWall = (px0, pz0, px1, pz1, inCX, inCZ) => {
+                            if (hasCell(inCX, inCZ)) drawTriWallSegment(px0, pz0, px1, pz1);
+                        };
+
+                        for (let j = 0; j < zArr.length - 1; j++) {
+                            if (zArr[j] >= min_lowerZ - 0.01 && zArr[j+1] <= max_lowerZ + 0.01) {
+                                const cz = (zArr[j] + zArr[j+1]) / 2;
+                                safeDrawTriWall(min_lowerX, zArr[j], min_lowerX, zArr[j+1], min_lowerX + 0.1, cz);
+                                safeDrawTriWall(max_lowerX, zArr[j+1], max_lowerX, zArr[j], max_lowerX - 0.1, cz);
                             }
-                            addRoofQuad(pOT_F, pOB_F, pIB_F, pIT_F); 
-                            addWallTri([x_in_R, H_max, z_wall_F], [x_in_R, 0, z_wall_F], [x_wall_R, 0, z_wall_F]);
                         }
-                    }
-
-                    if (lr.out_nx > 0) {
-                        let z_inF = z_in_F, z_outF = z_out_F;
-                        let z_inB = z_in_B, z_outB = z_out_B;
-                        if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
-                        if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
-
-                        const pIT_F = [x_in_L, H_max+t, z_inF], pIT_B = [x_in_L, H_max+t, z_inB];
-                        const pIB_F = [x_in_L, H_max, z_inF],   pIB_B = [x_in_L, H_max, z_inB];
-                        const pOT_F = [x_out_L, -H_out_eaves+t, z_outF], pOT_B = [x_out_L, -H_out_eaves+t, z_outB];
-                        const pOB_F = [x_out_L, -H_out_eaves, z_outF],   pOB_B = [x_out_L, -H_out_eaves, z_outB];
-
-                        addRoofQuad(pIT_F, pIT_B, pOT_B, pOT_F);
-                        addRoofQuad(pIB_B, pIB_F, pOB_F, pOB_B);
-                        addRoofQuad(pOT_B, pOT_F, pOB_F, pOB_B);
-
-                        if (lr.out_pz === 0) {
-                            if (k_lr > 0) {
-                                const pBT_F = [x_in_L + backDist, H_max-dropInner+t, z_wall_F + k_lr];
-                                const pBT_B = [x_in_L + backDist, H_max-dropInner+t, z_wall_F];
-                                const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_lr];
-                                const pBB_B = [x_in_L + backDist, H_max-dropInner, z_wall_F];
-                                const piT_B = [x_in_L, H_max+t, z_wall_F];
-                                const piB_B = [x_in_L, H_max, z_wall_F];
-                                addRoofQuad(pBT_F, pBT_B, piT_B, pIT_F);
-                                addRoofQuad(piB_B, pIB_F, pBB_F, pBB_B);
-                                addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
-                                addRoofQuad(pBT_F, pBB_F, pIB_F, pIT_F); 
+                        for (let i = 0; i < xArr.length - 1; i++) {
+                            if (xArr[i] >= min_lowerX - 0.01 && xArr[i+1] <= max_lowerX + 0.01) {
+                                const cx = (xArr[i] + xArr[i+1]) / 2;
+                                safeDrawTriWall(xArr[i+1], min_lowerZ, xArr[i], min_lowerZ, cx, min_lowerZ + 0.1);
+                                safeDrawTriWall(xArr[i], max_lowerZ, xArr[i+1], max_lowerZ, cx, max_lowerZ - 0.1);
                             }
-                            addRoofQuad(pIT_F, pIB_F, pOB_F, pOT_F); 
-                            addWallTri([x_in_L, H_max, z_wall_F], [x_wall_L, 0, z_wall_F], [x_in_L, 0, z_wall_F]);
                         }
-                        if (lr.out_nz === 0) {
-                            if (k_lr > 0) {
-                                const pBT_F = [x_in_L + backDist, H_max-dropInner+t, z_wall_B];
-                                const pBT_B = [x_in_L + backDist, H_max-dropInner+t, z_wall_B - k_lr];
-                                const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_B];
-                                const pBB_B = [x_in_L + backDist, Math.max(0, H_max-dropInner), z_wall_B - k_lr]; 
-                                const piT_F = [x_in_L, H_max+t, z_wall_B];
-                                const piB_F = [x_in_L, H_max, z_wall_B];
-                                addRoofQuad(pBT_F, pBT_B, pIT_B, piT_F);
-                                addRoofQuad(pIB_B, piB_F, pBB_F, pBB_B);
-                                addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
-                                addRoofQuad(pIT_B, pIB_B, pBB_B, pBT_B); 
-                            }
-                            addRoofQuad(pOT_B, pOB_B, pIB_B, pIT_B); 
-                            addWallTri([x_in_L, H_max, z_wall_B], [x_in_L, 0, z_wall_B], [x_wall_L, 0, z_wall_B]);
-                        }
-                    }
 
-                    if (roofVerts.length > 0) {
-                        const rGeo = new THREE.BufferGeometry();
-                        rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(roofVerts), 3));
-                        rGeo.setIndex(roofInds);
-                        rGeo.computeVertexNormals();
-                        const rMesh = new THREE.Mesh(rGeo, roofMat);
-                        rMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' };
-                        skirtGroup.add(rMesh);
-                        const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
-                        rLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' };
-                        skirtGroup.add(rLine);
-                    }
-                    if (wallVerts.length > 0) {
-                        const wGeo = new THREE.BufferGeometry();
-                        wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts), 3));
-                        wGeo.setIndex(wallInds);
-                        wGeo.computeVertexNormals();
-                        const wMesh = new THREE.Mesh(wGeo, wallMat);
-                        wMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' };
-                        skirtGroup.add(wMesh);
-                        const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
-                        wLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' };
-                        skirtGroup.add(wLine);
-                    }
+                        // 3. メッシュ登録（下層と上層をそれぞれ別マテリアルで登録）
+                        if (lowerVerts2.length > 0) {
+                            const lGeo = new THREE.BufferGeometry();
+                            lGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lowerVerts2), 3));
+                            lGeo.setIndex(lowerInds2); lGeo.computeVertexNormals();
+                            const lMesh = new THREE.Mesh(lGeo, wallMat);
+                            lMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(lMesh);
+                            const lLine = new THREE.LineSegments(new THREE.EdgesGeometry(lGeo), edgeMat);
+                            lLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(lLine);
+                        }
+                        if (upperVerts2.length > 0) {
+                            const uGeo = new THREE.BufferGeometry();
+                            uGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(upperVerts2), 3));
+                            uGeo.setIndex(upperInds2); uGeo.computeVertexNormals();
+                            const uMesh = new THREE.Mesh(uGeo, roofMat);
+                            uMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(uMesh);
+                            const uLine = new THREE.LineSegments(new THREE.EdgesGeometry(uGeo), edgeMat);
+                            uLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(uLine);
+                        }
+                        if (wallVerts2.length > 0) {
+                            const wGeo = new THREE.BufferGeometry();
+                            wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts2), 3));
+                            wGeo.setIndex(wallInds2); wGeo.computeVertexNormals();
+                            const wMesh = new THREE.Mesh(wGeo, wallMat);
+                            wMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(wMesh);
+                            const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
+                            wLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(wLine);
+                        }
+
+                    } else {
+                        // ==== 寄棟の2層分割描画ロジック ====
+                        const e_nx = e_lr * (lr.out_nx / max_out);
+                        const e_px = e_lr * (lr.out_px / max_out);
+                        const e_nz = e_lr * (lr.out_nz / max_out);
+                        const e_pz = e_lr * (lr.out_pz / max_out);
+
+                        const x_wall_L = -w2; const x_wall_R = w2;
+                        const z_wall_B = -d2; const z_wall_F = d2;
+                        const x_in_L = x_wall_L + lr.out_nx; const x_in_R = x_wall_R - lr.out_px;
+                        const z_in_B = z_wall_B + lr.out_nz; const z_in_F = z_wall_F - lr.out_pz;
+                        const x_out_L = x_wall_L - e_nx; const x_out_R = x_wall_R + e_px;
+                        const z_out_B = z_wall_B - e_nz; const z_out_F = z_wall_F + e_pz;
+
+                        // ★修正：下層と上層のメッシュデータを分離
+                        const lowerVerts = [], lowerInds = [];
+                        const upperVerts = [], upperInds = [];
+                        const wallVerts = [], wallInds = [];
+                        let lIdx = 0, uIdx = 0, wIdx = 0;
+
+                        const addLowerQuad = (p0, p1, p2, p3) => {
+                            lowerVerts.push(...p0, ...p1, ...p2, ...p3);
+                            lowerInds.push(lIdx, lIdx+1, lIdx+2, lIdx, lIdx+2, lIdx+3);
+                            lIdx += 4;
+                        };
+                        const addUpperQuad = (p0, p1, p2, p3) => {
+                            upperVerts.push(...p0, ...p1, ...p2, ...p3);
+                            upperInds.push(uIdx, uIdx+1, uIdx+2, uIdx, uIdx+2, uIdx+3);
+                            uIdx += 4;
+                        };
+                        const addWallTri = (p0, p1, p2) => {
+                            wallVerts.push(...p0, ...p1, ...p2);
+                            wallInds.push(wIdx, wIdx+1, wIdx+2);
+                            wIdx += 3;
+                        };
+
+                        // ★修正：元の四角形を「上面(T)か下面(B)か」自動判定して2層に分割する魔法の関数
+                        const addRoofQuad = (p0, p1, p2, p3) => {
+                            const isTop = (p) => p[3] === 'T';
+                            const allTop = isTop(p0) && isTop(p1) && isTop(p2) && isTop(p3);
+                            const allBot = !isTop(p0) && !isTop(p1) && !isTop(p2) && !isTop(p3);
+
+                            const makeUpper = p => isTop(p) ? [p[0], p[1]+t2, p[2]] : [p[0], p[1]+t1, p[2]];
+                            const makeLower = p => isTop(p) ? [p[0], p[1]+t1, p[2]] : [p[0], p[1], p[2]];
+
+                            // 下面(全てB)以外は上層を描画
+                            if (!allBot) addUpperQuad(makeUpper(p0), makeUpper(p1), makeUpper(p2), makeUpper(p3));
+                            // 上面(全てT)以外は下層を描画
+                            if (!allTop) addLowerQuad(makeLower(p0), makeLower(p1), makeLower(p2), makeLower(p3));
+                        };
+
+                        if (lr.out_pz > 0) { 
+                            let x_L_in = x_in_L, x_L_out = x_out_L;
+                            let x_R_in = x_in_R, x_R_out = x_out_R;
+                            if (lr.out_nx === 0) { x_L_in = x_wall_L - k_lr; x_L_out = x_wall_L - k_lr; }
+                            if (lr.out_px === 0) { x_R_in = x_wall_R + k_lr; x_R_out = x_wall_R + k_lr; }
+                            
+                            const pIT_L = [x_L_in, H_max, z_in_F, 'T'], pIT_R = [x_R_in, H_max, z_in_F, 'T'];
+                            const pIB_L = [x_L_in, H_max, z_in_F, 'B'],   pIB_R = [x_R_in, H_max, z_in_F, 'B'];
+                            const pOT_L = [x_L_out, -H_out_eaves, z_out_F, 'T'], pOT_R = [x_R_out, -H_out_eaves, z_out_F, 'T'];
+                            const pOB_L = [x_L_out, -H_out_eaves, z_out_F, 'B'],   pOB_R = [x_R_out, -H_out_eaves, z_out_F, 'B'];
+
+                            addRoofQuad(pIT_L, pIT_R, pOT_R, pOT_L); 
+                            addRoofQuad(pIB_R, pIB_L, pOB_L, pOB_R); 
+                            addRoofQuad(pOT_R, pOT_L, pOB_L, pOB_R); 
+
+                            if (lr.out_nx === 0) { 
+                                if (k_lr > 0) {
+                                    const pBT_L = [x_wall_L - k_lr, H_max-dropInner, z_in_F - backDist, 'T'];
+                                    const pBT_R = [x_wall_L, H_max-dropInner, z_in_F - backDist, 'T'];
+                                    const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const pBB_R = [x_wall_L, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const piT_R = [x_wall_L, H_max, z_in_F, 'T'];
+                                    const piB_R = [x_wall_L, H_max, z_in_F, 'B'];
+                                    addRoofQuad(pBT_L, pBT_R, piT_R, pIT_L); 
+                                    addRoofQuad(piB_R, pIB_L, pBB_L, pBB_R); 
+                                    addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R); 
+                                    addRoofQuad(pBT_L, pBB_L, pIB_L, pIT_L); 
+                                }
+                                addRoofQuad(pIT_L, pIB_L, pOB_L, pOT_L); 
+                                addWallTri([x_wall_L, H_max, z_in_F], [x_wall_L, 0, z_in_F], [x_wall_L, 0, z_wall_F]);
+                            }
+                            if (lr.out_px === 0) { 
+                                if (k_lr > 0) {
+                                    const pBT_L = [x_wall_R, H_max-dropInner, z_in_F - backDist, 'T'];
+                                    const pBT_R = [x_wall_R + k_lr, H_max-dropInner, z_in_F - backDist, 'T'];
+                                    const pBB_L = [x_wall_R, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_F - backDist, 'B'];
+                                    const piT_L = [x_wall_R, H_max, z_in_F, 'T'];
+                                    const piB_L = [x_wall_R, H_max, z_in_F, 'B'];
+                                    addRoofQuad(pBT_L, pBT_R, pIT_R, piT_L);
+                                    addRoofQuad(pIB_R, piB_L, pBB_L, pBB_R);
+                                    addRoofQuad(pBT_R, pBT_L, pBB_L, pBB_R);
+                                    addRoofQuad(pIT_R, pIB_R, pBB_R, pBT_R); 
+                                }
+                                addRoofQuad(pOT_R, pOB_R, pIB_R, pIT_R); 
+                                addWallTri([x_wall_R, H_max, z_in_F], [x_wall_R, 0, z_wall_F], [x_wall_R, 0, z_in_F]);
+                            }
+                        }
+
+                        if (lr.out_nz > 0) {
+                            let x_inR = x_in_R, x_outR = x_out_R;
+                            let x_inL = x_in_L, x_outL = x_out_L;
+                            if (lr.out_px === 0) { x_inR = x_wall_R + k_lr; x_outR = x_wall_R + k_lr; }
+                            if (lr.out_nx === 0) { x_inL = x_wall_L - k_lr; x_outL = x_wall_L - k_lr; }
+
+                            const pIT_R = [x_inR, H_max, z_in_B, 'T'], pIT_L = [x_inL, H_max, z_in_B, 'T'];
+                            const pIB_R = [x_inR, H_max, z_in_B, 'B'],   pIB_L = [x_inL, H_max, z_in_B, 'B'];
+                            const pOT_R = [x_outR, -H_out_eaves, z_out_B, 'T'], pOT_L = [x_outL, -H_out_eaves, z_out_B, 'T'];
+                            const pOB_R = [x_outR, -H_out_eaves, z_out_B, 'B'],   pOB_L = [x_outL, -H_out_eaves, z_out_B, 'B'];
+
+                            addRoofQuad(pIT_R, pIT_L, pOT_L, pOT_R);
+                            addRoofQuad(pIB_L, pIB_R, pOB_R, pOB_L);
+                            addRoofQuad(pOT_L, pOT_R, pOB_R, pOB_L);
+
+                            if (lr.out_px === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_R = [x_wall_R + k_lr, H_max-dropInner, z_in_B + backDist, 'T'];
+                                    const pBT_L = [x_wall_R, H_max-dropInner, z_in_B + backDist, 'T'];
+                                    const pBB_R = [x_wall_R + k_lr, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const pBB_L = [x_wall_R, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const piT_L = [x_wall_R, H_max, z_in_B, 'T'];
+                                    const piB_L = [x_wall_R, H_max, z_in_B, 'B'];
+                                    addRoofQuad(pBT_R, pBT_L, piT_L, pIT_R);
+                                    addRoofQuad(piB_L, pIB_R, pBB_R, pBB_L);
+                                    addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
+                                    addRoofQuad(pBT_R, pBB_R, pIB_R, pIT_R); 
+                                }
+                                addRoofQuad(pIT_R, pIB_R, pOB_R, pOT_R); 
+                                addWallTri([x_wall_R, H_max, z_in_B], [x_wall_R, 0, z_in_B], [x_wall_R, 0, z_wall_B]);
+                            }
+                            if (lr.out_nx === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_R = [x_wall_L, H_max-dropInner, z_in_B + backDist, 'T'];
+                                    const pBT_L = [x_wall_L - k_lr, H_max-dropInner, z_in_B + backDist, 'T'];
+                                    const pBB_R = [x_wall_L, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const pBB_L = [x_wall_L - k_lr, H_max-dropInner, z_in_B + backDist, 'B'];
+                                    const piT_R = [x_wall_L, H_max, z_in_B, 'T'];
+                                    const piB_R = [x_wall_L, H_max, z_in_B, 'B'];
+                                    addRoofQuad(pBT_R, pBT_L, pIT_L, piT_R);
+                                    addRoofQuad(pIB_L, piB_R, pBB_R, pBB_L); 
+                                    addRoofQuad(pBT_L, pBT_R, pBB_R, pBB_L);
+                                    addRoofQuad(pIT_L, pIB_L, pBB_L, pBT_L); 
+                                }
+                                addRoofQuad(pOT_L, pOB_L, pIB_L, pIT_L); 
+                                addWallTri([x_in_L, H_max, z_in_B], [x_wall_L, 0, z_wall_B], [x_in_L, 0, z_in_B]);
+                            }
+                        }
+
+                        if (lr.out_px > 0) {
+                            let z_inB = z_in_B, z_outB = z_out_B; 
+                            let z_inF = z_in_F, z_outF = z_out_F; 
+                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
+                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
+
+                            const pIT_B = [x_in_R, H_max, z_inB, 'T'], pIT_F = [x_in_R, H_max, z_inF, 'T'];
+                            const pIB_B = [x_in_R, H_max, z_inB, 'B'],   pIB_F = [x_in_R, H_max, z_inF, 'B'];
+                            const pOT_B = [x_out_R, -H_out_eaves, z_outB, 'T'], pOT_F = [x_out_R, -H_out_eaves, z_outF, 'T'];
+                            const pOB_B = [x_out_R, -H_out_eaves, z_outB, 'B'],   pOB_F = [x_out_R, -H_out_eaves, z_outF, 'B'];
+
+                            addRoofQuad(pIT_B, pIT_F, pOT_F, pOT_B);
+                            addRoofQuad(pIB_F, pIB_B, pOB_B, pOB_F);
+                            addRoofQuad(pOT_F, pOT_B, pOB_B, pOB_F);
+
+                            if (lr.out_nz === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_lr, 'T'];
+                                    const pBT_F = [x_in_R - backDist, H_max-dropInner, z_wall_B, 'T'];
+                                    const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_B - k_lr, 'B'];
+                                    const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_B, 'B'];
+                                    const piT_F = [x_in_R, H_max, z_wall_B, 'T'];
+                                    const piB_F = [x_in_R, H_max, z_wall_B, 'B'];
+                                    addRoofQuad(pBT_B, pBT_F, piT_F, pIT_B);
+                                    addRoofQuad(piB_F, pIB_B, pBB_B, pBB_F);
+                                    addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
+                                    addRoofQuad(pBT_B, pBB_B, pIB_B, pIT_B); 
+                                }
+                                addRoofQuad(pIT_B, pIB_B, pOB_B, pOT_B); 
+                                addWallTri([x_in_R, H_max, z_wall_B], [x_wall_R, 0, z_wall_B], [x_in_R, 0, z_wall_B]);
+                            }
+                            if (lr.out_pz === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_B = [x_in_R - backDist, H_max-dropInner, z_wall_F, 'T'];
+                                    const pBT_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_lr, 'T'];
+                                    const pBB_B = [x_in_R - backDist, H_max-dropInner, z_wall_F, 'B'];
+                                    const pBB_F = [x_in_R - backDist, H_max-dropInner, z_wall_F + k_lr, 'B'];
+                                    const piT_B = [x_in_R, H_max, z_wall_F, 'T'];
+                                    const piB_B = [x_in_R, H_max, z_wall_F, 'B'];
+                                    addRoofQuad(pBT_B, pBT_F, pIT_F, piT_B);
+                                    addRoofQuad(pIB_F, piB_B, pBB_B, pBB_F);
+                                    addRoofQuad(pBT_F, pBT_B, pBB_B, pBB_F);
+                                    addRoofQuad(pIT_F, pIB_F, pBB_F, pBT_F); 
+                                }
+                                addRoofQuad(pOT_F, pOB_F, pIB_F, pIT_F); 
+                                addWallTri([x_in_R, H_max, z_wall_F], [x_in_R, 0, z_wall_F], [x_wall_R, 0, z_wall_F]);
+                            }
+                        }
+
+                        if (lr.out_nx > 0) {
+                            let z_inF = z_in_F, z_outF = z_out_F;
+                            let z_inB = z_in_B, z_outB = z_out_B;
+                            if (lr.out_pz === 0) { z_inF = z_wall_F + k_lr; z_outF = z_wall_F + k_lr; }
+                            if (lr.out_nz === 0) { z_inB = z_wall_B - k_lr; z_outB = z_wall_B - k_lr; }
+
+                            const pIT_F = [x_in_L, H_max, z_inF, 'T'], pIT_B = [x_in_L, H_max, z_inB, 'T'];
+                            const pIB_F = [x_in_L, H_max, z_inF, 'B'],   pIB_B = [x_in_L, H_max, z_inB, 'B'];
+                            const pOT_F = [x_out_L, -H_out_eaves, z_outF, 'T'], pOT_B = [x_out_L, -H_out_eaves, z_outB, 'T'];
+                            const pOB_F = [x_out_L, -H_out_eaves, z_outF, 'B'],   pOB_B = [x_out_L, -H_out_eaves, z_outB, 'B'];
+
+                            addRoofQuad(pIT_F, pIT_B, pOT_B, pOT_F);
+                            addRoofQuad(pIB_B, pIB_F, pOB_F, pOB_B);
+                            addRoofQuad(pOT_B, pOT_F, pOB_F, pOB_B);
+
+                            if (lr.out_pz === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_lr, 'T'];
+                                    const pBT_B = [x_in_L + backDist, H_max-dropInner, z_wall_F, 'T'];
+                                    const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_F + k_lr, 'B'];
+                                    const pBB_B = [x_in_L + backDist, H_max-dropInner, z_wall_F, 'B'];
+                                    const piT_B = [x_in_L, H_max, z_wall_F, 'T'];
+                                    const piB_B = [x_in_L, H_max, z_wall_F, 'B'];
+                                    addRoofQuad(pBT_F, pBT_B, piT_B, pIT_F);
+                                    addRoofQuad(piB_B, pIB_F, pBB_F, pBB_B);
+                                    addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
+                                    addRoofQuad(pBT_F, pBB_F, pIB_F, pIT_F); 
+                                }
+                                addRoofQuad(pIT_F, pIB_F, pOB_F, pOT_F); 
+                                addWallTri([x_in_L, H_max, z_wall_F], [x_wall_L, 0, z_wall_F], [x_in_L, 0, z_wall_F]);
+                            }
+                            if (lr.out_nz === 0) {
+                                if (k_lr > 0) {
+                                    const pBT_F = [x_in_L + backDist, H_max-dropInner, z_wall_B, 'T'];
+                                    const pBT_B = [x_in_L + backDist, H_max-dropInner, z_wall_B - k_lr, 'T'];
+                                    const pBB_F = [x_in_L + backDist, H_max-dropInner, z_wall_B, 'B'];
+                                    const pBB_B = [x_in_L + backDist, Math.max(0, H_max-dropInner), z_wall_B - k_lr, 'B']; 
+                                    const piT_F = [x_in_L, H_max, z_wall_B, 'T'];
+                                    const piB_F = [x_in_L, H_max, z_wall_B, 'B'];
+                                    addRoofQuad(pBT_F, pBT_B, pIT_B, piT_F);
+                                    addRoofQuad(pIB_B, piB_F, pBB_F, pBB_B);
+                                    addRoofQuad(pBT_B, pBT_F, pBB_F, pBB_B);
+                                    addRoofQuad(pIT_B, pIB_B, pBB_B, pBT_B); 
+                                }
+                                addRoofQuad(pOT_B, pOB_B, pIB_B, pIT_B); 
+                                addWallTri([x_in_L, H_max, z_wall_B], [x_in_L, 0, z_wall_B], [x_wall_L, 0, z_wall_B]);
+                            }
+                        }
+
+                        if (lowerVerts.length > 0) {
+                            const lGeo = new THREE.BufferGeometry();
+                            lGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lowerVerts), 3));
+                            lGeo.setIndex(lowerInds); lGeo.computeVertexNormals();
+                            const lMesh = new THREE.Mesh(lGeo, wallMat);
+                            lMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(lMesh);
+                            const lLine = new THREE.LineSegments(new THREE.EdgesGeometry(lGeo), edgeMat);
+                            lLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(lLine);
+                        }
+                        if (upperVerts.length > 0) {
+                            const uGeo = new THREE.BufferGeometry();
+                            uGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(upperVerts), 3));
+                            uGeo.setIndex(upperInds); uGeo.computeVertexNormals();
+                            const uMesh = new THREE.Mesh(uGeo, roofMat);
+                            uMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(uMesh);
+                            const uLine = new THREE.LineSegments(new THREE.EdgesGeometry(uGeo), edgeMat);
+                            uLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(uLine);
+                        }
+                        if (wallVerts.length > 0) {
+                            const wGeo = new THREE.BufferGeometry();
+                            wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wallVerts), 3));
+                            wGeo.setIndex(wallInds); wGeo.computeVertexNormals();
+                            const wMesh = new THREE.Mesh(wGeo, wallMat);
+                            wMesh.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(wMesh);
+                            const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
+                            wLine.userData = { id: b.id, isDeco: true, type: 'lowerRoof' }; skirtGroup.add(wLine);
+                        }
+                    }    
                 }
             }
-
+        
             // ==========================================
             // 3. 水平庇の生成 (flatVisors)
             // ==========================================
@@ -1018,45 +1245,123 @@ export const ModelingEngine = {
                     const e_in_target = rParams.in_px; 
                     const max_in = Math.min(e_in_target, w/2, d/2); 
                     
+                    // ★新規追加: 棟の位置の取得とクランプ
+                    const ridge_target = rParams.ridge_dist !== undefined ? rParams.ridge_dist : max_in / 2;
+                    const max_ridge = Math.min(ridge_target, max_in);
+                    
                     const rSlope = rParams.slope / 10; 
                     const rThick = 150; 
 
+                    // 基準となる下面（白層の下端）
                     const y_OB = pHeight - e_out * rSlope;  
-                    const y_OT = y_OB + rThick;            
-                    const y_IB = pHeight + max_in * rSlope; 
-                    const y_IT = y_IB + rThick;            
+                    const y_OM = y_OB + 100; // 白層の上面・黒層の下面
+                    const y_OT = y_OM + 150; // 黒層の上面
+                    
+                    const y_PB = pHeight + max_ridge * rSlope; 
+                    const y_PM = y_PB + 100;
+                    const y_PT = y_PM + 150;
+
+                    let end_dist = max_in - max_ridge;
+                    let y_EB = y_PB - end_dist * rSlope; 
+                    
+                    // 床面(y=0)を突き抜ける場合のクリップ処理
+                    if (y_EB < 0) {
+                        y_EB = 0;
+                        end_dist = y_PB / rSlope;
+                    }
+                    const y_EM = y_EB + 100;
+                    const y_ET = y_EM + 150;
 
                     const x_out = w/2 + e_out;
                     const z_out = d/2 + e_out;
-                    const x_in = w/2 - max_in;
-                    const z_in = d/2 - max_in;
+                    const x_peak = w/2 - max_ridge;
+                    const z_peak = d/2 - max_ridge;
+                    const x_end = x_peak - end_dist;
+                    const z_end = z_peak - end_dist;
+                    const x_wall = w/2;
+                    const z_wall = d/2;
 
-                    const pts = [
-                        [x_out, y_OT, z_out], [x_out, y_OB, z_out], [x_in, y_IT, z_in], [x_in, y_IB, z_in],       
-                        [-x_out, y_OT, z_out], [-x_out, y_OB, z_out], [-x_in, y_IT, z_in], [-x_in, y_IB, z_in],   
-                        [-x_out, y_OT, -z_out], [-x_out, y_OB, -z_out], [-x_in, y_IT, -z_in], [-x_in, y_IB, -z_in], 
-                        [x_out, y_OT, -z_out], [x_out, y_OB, -z_out], [x_in, y_IT, -z_in], [x_in, y_IB, -z_in]    
-                    ];
+                    // 4つの角それぞれに 10の座標を定義
+                    const pts = [];
+                    const corners = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+                    
+                    for (let i = 0; i < 4; i++) {
+                        const sx = corners[i][0], sz = corners[i][1];
+                        pts.push(
+                            [sx*x_out, y_OT, sz*z_out], [sx*x_out, y_OM, sz*z_out], [sx*x_out, y_OB, sz*z_out],
+                            [sx*x_peak, y_PT, sz*z_peak], [sx*x_peak, y_PM, sz*z_peak], [sx*x_peak, y_PB, sz*z_peak],
+                            [sx*x_end, y_ET, sz*z_end], [sx*x_end, y_EM, sz*z_end], [sx*x_end, y_EB, sz*z_end],
+                            [sx*x_wall, y_OB, sz*z_wall] // 水平軒裏用の壁位置の点
+                        );
+                    }
 
+                    // 屋根色(黒)用メッシュデータ
                     const rVerts = []; const rInds = []; let vIdx = 0;
+                    // 壁色(白)用メッシュデータ
+                    const wVerts = []; const wInds = []; let wIdx = 0; 
 
                     const addQuad = (p0, p1, p2, p3) => {
                         rVerts.push(...p0, ...p1, ...p2, ...p3);
-                        rInds.push(vIdx, vIdx+1, vIdx+2, vIdx, vIdx+2, vIdx+3);
-                        vIdx += 4;
+                        rInds.push(vIdx, vIdx+1, vIdx+2, vIdx, vIdx+2, vIdx+3); vIdx += 4;
+                    };
+                    const addWallQuad = (p0, p1, p2, p3) => {
+                        wVerts.push(...p0, ...p1, ...p2, ...p3);
+                        wInds.push(wIdx, wIdx+1, wIdx+2, wIdx, wIdx+2, wIdx+3); wIdx += 4;
                     };
 
                     for (let i = 0; i < 4; i++) {
                         const next = (i + 1) % 4;
-                        const i0 = i * 4; const n0 = next * 4;
-                        const pOT = pts[i0 + 0], pOB = pts[i0 + 1], pIT = pts[i0 + 2], pIB = pts[i0 + 3];
-                        const nOT = pts[n0 + 0], nOB = pts[n0 + 1], nIT = pts[n0 + 2], nIB = pts[n0 + 3];
-                        addQuad(pOT, nOT, nIT, pIT); 
-                        addQuad(pOB, pIB, nIB, nOB); 
-                        addQuad(pOB, pOT, nOT, nOB); 
-                        addQuad(pIB, nIB, nIT, pIT); 
+                        const i0 = i * 10; const n0 = next * 10;
+                        
+                        const pOT = pts[i0+0], pOM = pts[i0+1], pOB = pts[i0+2];
+                        const pPT = pts[i0+3], pPM = pts[i0+4], pPB = pts[i0+5];
+                        const pET = pts[i0+6], pEM = pts[i0+7], pEB = pts[i0+8];
+                        const pWB = pts[i0+9];
+                        
+                        const nOT = pts[n0+0], nOM = pts[n0+1], nOB = pts[n0+2];
+                        const nPT = pts[n0+3], nPM = pts[n0+4], nPB = pts[n0+5];
+                        const nET = pts[n0+6], nEM = pts[n0+7], nEB = pts[n0+8];
+                        const nWB = pts[n0+9];
+                        
+                        // ① 黒色（屋根）レイヤー
+                        addQuad(pOT, nOT, nPT, pPT); // 上面
+                        addQuad(pOM, pPM, nPM, nOM); // 下面
+                        addQuad(pOM, pOT, nOT, nOM); // 外側小口
+                        if (end_dist > 0.01) {
+                            addQuad(pPT, nPT, nET, pET); // 内側上面
+                            addQuad(pPM, pEM, nEM, nPM); // 内側下面
+                        }
+                        addQuad(pEM, nEM, nET, pET); // 内側小口
+                        
+                        // ② 白色（壁・下地）レイヤー
+                        addWallQuad(pOM, nOM, nPM, pPM); // 上面 (黒の下面と重なる)
+                        if (end_dist > 0.01) {
+                            addWallQuad(pPM, nPM, nEM, pEM); // 内側上面
+                        }
+                        
+                        // 下面 (フラグによる水平軒裏の分岐)
+                        if (rParams.flatEaves) {
+                            addWallQuad(pOB, pWB, nWB, nOB); // 外縁から壁まで水平
+                            addWallQuad(pWB, pPB, nPB, nWB); // 壁から頂部までの裏面
+                        } else {
+                            addWallQuad(pOB, pPB, nPB, nOB); // 従来の斜め下面
+                        }
+                        if (end_dist > 0.01) {
+                            addWallQuad(pPB, pEB, nEB, nPB); // 頂部から内端までの下面
+                        }
+                        
+                        addWallQuad(pOB, pOM, nOM, nOB); // 外側小口
+                        addWallQuad(pEB, nEB, nEM, pEM); // 内側小口
+                        
+                        // ③ 崖 (中庭の床まで塞ぐ)
+                        if (y_EB > 0.01) {
+                            const pFloor = [pEB[0], 0, pEB[2]];
+                            const nFloor = [nEB[0], 0, nEB[2]];
+                            addWallQuad(pFloor, nFloor, nEB, pEB);
+                        }
                     }
 
+                    // 屋根色メッシュの生成
                     const rGeo = new THREE.BufferGeometry();
                     rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rVerts), 3));
                     rGeo.setIndex(rInds);
@@ -1065,6 +1370,18 @@ export const ModelingEngine = {
                     const rMesh = new THREE.Mesh(rGeo, roofMat);
                     const rLine = new THREE.LineSegments(new THREE.EdgesGeometry(rGeo), edgeMat);
                     roofGroup.add(rMesh, rLine);
+
+                    // ★新規追加: 壁色（崖）メッシュの生成
+                    if (wVerts.length > 0) {
+                        const wGeo = new THREE.BufferGeometry();
+                        wGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(wVerts), 3));
+                        wGeo.setIndex(wInds);
+                        wGeo.computeVertexNormals();
+
+                        const wMesh = new THREE.Mesh(wGeo, wallMat);
+                        const wLine = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), edgeMat);
+                        roofGroup.add(wMesh, wLine);
+                    }
                 }
 
             } else if (b.roof.type === '切妻' || b.roof.type === '寄棟') {
@@ -1085,8 +1402,9 @@ export const ModelingEngine = {
                     const isRot = rParams.rotate90; 
                     const profW = isRot ? d : w; 
                     
-                    let rOffsetPct = rParams.ridgeOffset || 0; 
-                    let ridgeX = (profW * rOffsetPct) / 100;
+                    // ★修正：%の計算を外し、mmとして直接扱うように変更
+                    let rOffset = rParams.ridgeOffset || 0; 
+                    let ridgeX = rOffset;
                     let spanL = (profW / 2) + ridgeX;
                     let spanR = (profW / 2) - ridgeX;
                     const ridgeH = Math.max(spanL, spanR) * slope;
@@ -1094,8 +1412,10 @@ export const ModelingEngine = {
                     getRoofY = (x, z) => {
                         let pos = isRot ? z : x;
                         let dist = pos - ridgeX;
-                        if (rOffsetPct === 50 && dist > 0) return ridgeH + dist * slope;
-                        if (rOffsetPct === -50 && dist < 0) return ridgeH + Math.abs(dist) * slope;
+                        const maxOff = profW / 2;
+                        // 片流れ屋根の判定もmmベース(maxOff)に変更
+                        if (rOffset >= maxOff - 0.01 && dist > 0) return ridgeH + dist * slope;
+                        if (rOffset <= -maxOff + 0.01 && dist < 0) return ridgeH + Math.abs(dist) * slope;
                         return ridgeH - Math.abs(dist) * slope;
                     };
                 } else {
@@ -1122,7 +1442,8 @@ export const ModelingEngine = {
 
                 // 2. 屋根の棟（折り目）の交点を登録
                 if (b.roof.type === '切妻') {
-                    const ridgeXCoord = (rParams.rotate90 ? d : w) * (rParams.ridgeOffset || 0) / 100;
+                    // ★修正：こちらも%の計算式を外す
+                    const ridgeXCoord = rParams.ridgeOffset || 0;
                     if (rParams.rotate90) addZ(ridgeXCoord); else addX(ridgeXCoord);
                 } else {
                     const dw = w/2 - d/2;
@@ -1384,22 +1705,24 @@ export const ModelingEngine = {
                 };
 
                 if (b.roof.type === '切妻') {
-                    if (!rParams.rotate90) {
-                        for(let i = 0; i < xArr.length - 1; i++) {
-                            const x0 = xArr[i], x1 = xArr[i+1];
-                            if (x0 < -w/2 || x1 > w/2) continue; 
-                            const cx = (x0 + x1) / 2;
-                            if (!(holeActive && Math.abs(hz - (-d/2)) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x1, -d/2, x0, -d/2); 
-                            if (!(holeActive && Math.abs(hz+hd - d/2) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x0, d/2, x1, d/2); 
-                        }
-                    } else {
-                        for(let j = 0; j < zArr.length - 1; j++) {
-                            const z0 = zArr[j], z1 = zArr[j+1];
-                            if (z0 < -d/2 || z1 > d/2) continue;
-                            const cz = (z0 + z1) / 2;
-                            if (!(holeActive && Math.abs(hx - (-w/2)) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(-w/2, z0, -w/2, z1); 
-                            if (!(holeActive && Math.abs(hx+hw - w/2) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(w/2, z1, w/2, z0); 
-                        }
+                    // ★完全修正: 切妻・片流れの向きに関わらず、四方の壁すべてをスキャンして隙間を塞ぐ
+                    
+                    // X方向のループ (奥と手前の壁面)
+                    for(let i = 0; i < xArr.length - 1; i++) {
+                        const x0 = xArr[i], x1 = xArr[i+1];
+                        if (x0 < -w/2 || x1 > w/2) continue; 
+                        const cx = (x0 + x1) / 2;
+                        if (!(holeActive && Math.abs(hz - (-d/2)) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x1, -d/2, x0, -d/2); 
+                        if (!(holeActive && Math.abs(hz+hd - d/2) < 0.1 && cx > hx && cx < hx+hw)) drawGableSegment(x0, d/2, x1, d/2); 
+                    }
+                    
+                    // Z方向のループ (左と右の壁面)
+                    for(let j = 0; j < zArr.length - 1; j++) {
+                        const z0 = zArr[j], z1 = zArr[j+1];
+                        if (z0 < -d/2 || z1 > d/2) continue;
+                        const cz = (z0 + z1) / 2;
+                        if (!(holeActive && Math.abs(hx - (-w/2)) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(-w/2, z0, -w/2, z1); 
+                        if (!(holeActive && Math.abs(hx+hw - w/2) < 0.1 && cz > hz && cz < hz+hd)) drawGableSegment(w/2, z1, w/2, z0); 
                     }
                 }
 
